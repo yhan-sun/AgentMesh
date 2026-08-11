@@ -25,6 +25,13 @@ use agentmesh_workspace::{Workspace, WorkspaceError, WorkspaceManager};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+/// Vendor-neutral execution context passed to task creation.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionMetadata {
+    /// Daemon instance id that owns the live runtime of this task.
+    pub runtime_owner: Option<String>,
+}
+
 /// Errors produced by the TaskManager.
 #[derive(Debug, thiserror::Error)]
 pub enum TaskError {
@@ -145,6 +152,17 @@ impl TaskManager {
         agent_id: &str,
         request: AgentRunRequest,
     ) -> Result<ManagedTaskRun, TaskError> {
+        self.start_with_metadata(agent_id, request, ExecutionMetadata::default())
+            .await
+    }
+
+    /// Start with execution metadata (e.g. the owning daemon instance).
+    pub async fn start_with_metadata(
+        &self,
+        agent_id: &str,
+        request: AgentRunRequest,
+        metadata: ExecutionMetadata,
+    ) -> Result<ManagedTaskRun, TaskError> {
         let context = Context::new();
         let mut session = AgentSession::new(context.id, agent_id);
         session.workspace = request.workspace.clone();
@@ -157,6 +175,9 @@ impl TaskManager {
         self.contexts
             .create_run_setup(&context, &session, &task)
             .await?;
+        if let Some(owner) = &metadata.runtime_owner {
+            self.tasks.set_runtime_owner(task.id, owner).await?;
+        }
         tracing::debug!(
             task_id = %task.id,
             context_id = %context.id,
@@ -240,6 +261,17 @@ impl TaskManager {
         source_task_id: Uuid,
         request: AgentRunRequest,
     ) -> Result<ManagedTaskRun, TaskError> {
+        self.resume_with_metadata(source_task_id, request, ExecutionMetadata::default())
+            .await
+    }
+
+    /// Resume with execution metadata (e.g. the owning daemon instance).
+    pub async fn resume_with_metadata(
+        &self,
+        source_task_id: Uuid,
+        request: AgentRunRequest,
+        metadata: ExecutionMetadata,
+    ) -> Result<ManagedTaskRun, TaskError> {
         let source = self
             .tasks
             .get(source_task_id)
@@ -297,6 +329,9 @@ impl TaskManager {
                 &task,
             )
             .await?;
+        if let Some(owner) = &metadata.runtime_owner {
+            self.tasks.set_runtime_owner(task.id, owner).await?;
+        }
         tracing::debug!(
             task_id = %task.id,
             context_id = %task.context_id,
@@ -320,6 +355,24 @@ impl TaskManager {
         self.tasks.mark_started(task.id).await?;
         let run = self.wrap_run(task, session.id, execution_workspace, handle);
         Ok(run)
+    }
+
+    /// Resolve which agent session a resume would target, without starting
+    /// anything. Used by the daemon to acquire the session lease *before*
+    /// invoking `resume`.
+    pub async fn resolve_resume_target(
+        &self,
+        source_task_id: Uuid,
+    ) -> Result<(Uuid, Uuid), TaskError> {
+        let source = self
+            .tasks
+            .get(source_task_id)
+            .await?
+            .ok_or(TaskError::TaskNotFound(source_task_id))?;
+        let session_id = source
+            .agent_session_id
+            .ok_or(TaskError::NativeSessionUnavailable(source_task_id))?;
+        Ok((source.context_id, session_id))
     }
 
     async fn ensure_context(&self, context_id: Uuid) -> Result<Context, TaskError> {

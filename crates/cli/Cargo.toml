@@ -12,12 +12,14 @@ path = "src/main.rs"
 [dependencies]
 agentmesh-adapters = { path = "../adapters" }
 agentmesh-core = { path = "../core" }
+agentmesh-daemon = { version = "0.1.0", path = "../daemon" }
 agentmesh-storage = { path = "../storage" }
 agentmesh-tasks = { path = "../tasks" }
 agentmesh-workspace = { version = "0.1.0", path = "../workspace" }
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
+futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

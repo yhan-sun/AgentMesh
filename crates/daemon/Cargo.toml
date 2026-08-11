@@ -1,0 +1,39 @@
+[package]
+name = "agentmesh-daemon"
+description = "AgentMesh daemon: runtime owner with IPC"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-adapters = { path = "../adapters" }
+agentmesh-core = { path = "../core" }
+agentmesh-storage = { path = "../storage" }
+agentmesh-tasks = { path = "../tasks" }
+agentmesh-workspace = { path = "../workspace" }
+anyhow.workspace = true
+async-stream = "0.3.6"
+axum.workspace = true
+chrono.workspace = true
+fs2.workspace = true
+futures.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+agentmesh-adapters = { path = "../adapters" }
+agentmesh-core = { path = "../core" }
+agentmesh-storage = { path = "../storage" }
+agentmesh-tasks = { path = "../tasks" }
+agentmesh-workspace = { path = "../workspace" }
+async-trait.workspace = true
+futures.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tempfile.workspace = true

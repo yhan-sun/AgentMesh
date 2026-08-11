@@ -92,6 +92,10 @@ impl Process {
     /// Spawn a child process and start streaming its output.
     pub async fn spawn(spec: ProcessSpec) -> Result<Self, RuntimeError> {
         let mut command = Command::new(&spec.program);
+        // Unix: run the child as its own process group so cancellation can
+        // kill the whole tree (e.g. node-shimmed CLIs like codex).
+        #[cfg(unix)]
+        command.process_group(0);
         command
             .args(&spec.args)
             .current_dir(&spec.cwd)
@@ -124,6 +128,7 @@ impl Process {
                     match cancel_rx.try_recv() {
                         Ok(()) | Err(mpsc::error::TryRecvError::Disconnected) => {
                             cancelled = true;
+                            kill_process_tree(child.id());
                             let _ = child.start_kill();
                         }
                         Err(mpsc::error::TryRecvError::Empty) => {}
@@ -195,6 +200,20 @@ fn spawn_line_reader<R>(
         }
     });
 }
+
+/// Kill the process group of `pid` (Unix). A no-op on other platforms;
+/// the direct child kill still applies.
+#[cfg(unix)]
+fn kill_process_tree(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(_pid: Option<u32>) {}
 
 #[cfg(test)]
 mod tests {

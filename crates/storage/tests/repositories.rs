@@ -2,6 +2,7 @@
 
 use agentmesh_core::{AgentMessage, AgentTask, Artifact, ArtifactKind, TaskStatus};
 use agentmesh_storage::{ArtifactRepository, Database, TaskFilter, TaskRepository};
+use sqlx::Row;
 use uuid::Uuid;
 
 async fn test_database() -> (Database, tempfile::TempDir) {
@@ -215,4 +216,68 @@ async fn artifact_kind_roundtrip() {
     let mut expected: Vec<ArtifactKind> = kinds.to_vec();
     expected.sort();
     assert_eq!(roundtripped, expected);
+}
+
+#[tokio::test]
+async fn runtime_owner_heartbeat_and_stale_recovery() {
+    let (db, _dir) = test_database().await;
+    let repo = TaskRepository::new(db.clone());
+
+    // Task A: owned by a dead instance, Working.
+    let a = task("mock", "a");
+    repo.create(&a).await.expect("create a");
+    repo.mark_started(a.id).await.expect("start a");
+    repo.set_runtime_owner(a.id, "instance-dead")
+        .await
+        .expect("owner a");
+
+    // Task B: owned by the current instance, Working.
+    let b = task("mock", "b");
+    repo.create(&b).await.expect("create b");
+    repo.mark_started(b.id).await.expect("start b");
+    repo.set_runtime_owner(b.id, "instance-alive")
+        .await
+        .expect("owner b");
+
+    // Task C: legacy, unowned, Working.
+    let c = task("mock", "c");
+    repo.create(&c).await.expect("create c");
+    repo.mark_started(c.id).await.expect("start c");
+
+    // Heartbeat for the live one.
+    repo.heartbeat(b.id).await.expect("heartbeat");
+
+    let recovered = repo
+        .recover_stale_owned_tasks("instance-alive")
+        .await
+        .expect("recover");
+    assert_eq!(recovered, 1, "only the dead-owner task is recovered");
+
+    let a_now = repo.get(a.id).await.expect("get a").expect("exists");
+    assert_eq!(a_now.status, TaskStatus::Failed);
+    assert!(
+        a_now
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("daemon terminated")
+    );
+    assert!(a_now.completed_at.is_some());
+
+    let b_now = repo.get(b.id).await.expect("get b").expect("exists");
+    assert_eq!(b_now.status, TaskStatus::Working, "current owner untouched");
+    let b_row = sqlx::query("SELECT runtime_heartbeat_at FROM tasks WHERE id = ?")
+        .bind(b.id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .expect("heartbeat row");
+    let heartbeat: Option<String> = b_row.get("runtime_heartbeat_at");
+    assert!(heartbeat.is_some(), "heartbeat persisted");
+
+    let c_now = repo.get(c.id).await.expect("get c").expect("exists");
+    assert_eq!(
+        c_now.status,
+        TaskStatus::Working,
+        "legacy unowned task untouched"
+    );
 }

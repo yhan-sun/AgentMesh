@@ -2,4 +2,4 @@
 
 pub mod manager;
 
-pub use manager::{ManagedTaskRun, TaskError, TaskManager};
+pub use manager::{ExecutionMetadata, ManagedTaskRun, TaskError, TaskManager};

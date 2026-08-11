@@ -1,9 +1,9 @@
-use std::io::Write;
-
 mod app;
 
-use agentmesh_adapters::{AgentRunRequest, HealthStatus};
-use agentmesh_core::{AgentEvent, AgentMessage, ArtifactKind, TaskStatus};
+use futures::StreamExt;
+
+use agentmesh_adapters::HealthStatus;
+use agentmesh_core::{AgentEvent, ArtifactKind, TaskStatus};
 use agentmesh_storage::TaskFilter;
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
@@ -81,6 +81,46 @@ enum Command {
         /// Task id (UUID)
         task_id: Uuid,
     },
+
+    /// Attach to a live task and observe its stream (detach-only Ctrl+C)
+    Attach {
+        /// Task id (UUID)
+        task_id: Uuid,
+    },
+
+    /// Cancel a live task (kills the real agent process via the daemon)
+    Cancel {
+        /// Task id (UUID)
+        task_id: Uuid,
+    },
+
+    /// Manage the AgentMesh daemon
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
+}
+
+#[derive(Subcommand)]
+enum DaemonCommand {
+    /// Start the background daemon (idempotent)
+    Start,
+
+    /// Show daemon status
+    Status,
+
+    /// Stop the daemon; refuses while tasks are running unless --force
+    Stop {
+        /// Cancel running tasks before shutting down
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Run the daemon in the foreground (advanced)
+    #[command(hide = true)]
+    Serve {
+        /// Scope: a project directory or "user"
+        #[arg(long)]
+        scope: String,
+    },
 }
 
 #[tokio::main]
@@ -124,6 +164,23 @@ async fn main() -> anyhow::Result<()> {
             let context = AppContext::init().await?;
             cmd_diff(&context, task_id).await?
         }
+        Command::Attach { task_id } => {
+            let client = daemon_client_or_err().await?;
+            cmd_attach(&client, task_id).await?
+        }
+        Command::Cancel { task_id } => {
+            let client = daemon_client_or_err().await?;
+            cmd_cancel(&client, task_id).await?
+        }
+        Command::Daemon(command) => match command {
+            DaemonCommand::Start => cmd_daemon_start().await?,
+            DaemonCommand::Status => cmd_daemon_status().await?,
+            DaemonCommand::Stop { force } => cmd_daemon_stop(force).await?,
+            DaemonCommand::Serve { scope } => {
+                let scope = agentmesh_daemon::runtime::parse_scope_arg(&scope)?;
+                agentmesh_daemon::serve(scope).await?
+            }
+        },
     }
     Ok(())
 }
@@ -214,100 +271,33 @@ async fn cmd_doctor(context: &AppContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_run(context: &AppContext, agent_id: &str, prompt: &str) -> anyhow::Result<()> {
-    let input = AgentMessage::user(prompt);
-    let request = AgentRunRequest::new(Uuid::new_v4(), Uuid::new_v4(), input);
-
-    let mut run = context
-        .task_manager
-        .start(agent_id, request)
+async fn cmd_run(_context: &AppContext, agent_id: &str, prompt: &str) -> anyhow::Result<()> {
+    let scope = agentmesh_daemon::Scope::resolve();
+    let client = agentmesh_daemon::connect_or_start(scope)
         .await
-        .map_err(|err| anyhow!("failed to start task: {err}"))?;
-    let agent_label = agent_id.to_string();
-    run_and_print(&mut run, &agent_label).await
+        .map_err(|err| anyhow!("unable to start AgentMesh daemon: {err}"))?;
+    let workspace = std::env::current_dir().ok();
+    let response = client
+        .run(agent_id, prompt, workspace.as_ref())
+        .await
+        .map_err(|err| anyhow!("failed to run task through daemon: {err}"))?;
+    stream_task_to_terminal(&client, &response, false).await
 }
 
 async fn cmd_resume(
-    context: &AppContext,
+    _context: &AppContext,
     source_task_id: Uuid,
     prompt: &str,
 ) -> anyhow::Result<()> {
-    let input = AgentMessage::user(prompt);
-    let request = AgentRunRequest::new(Uuid::new_v4(), Uuid::new_v4(), input);
-    let mut run = context
-        .task_manager
-        .resume(source_task_id, request)
+    let scope = agentmesh_daemon::Scope::resolve();
+    let client = agentmesh_daemon::connect_or_start(scope)
+        .await
+        .map_err(|err| anyhow!("unable to start AgentMesh daemon: {err}"))?;
+    let response = client
+        .resume(source_task_id, prompt)
         .await
         .map_err(|err| anyhow!("failed to resume task `{source_task_id}`: {err}"))?;
-    let agent_label = run.agent_id().to_string();
-    run_and_print(&mut run, &agent_label).await
-}
-
-/// Shared run loop: stream events, handle Ctrl+C, print task summary.
-async fn run_and_print(
-    run: &mut agentmesh_tasks::ManagedTaskRun,
-    agent_label: &str,
-) -> anyhow::Result<()> {
-    let mut artifacts = Vec::new();
-    let mut task_ok = false;
-    loop {
-        tokio::select! {
-            event = run.next_event() => {
-                let Some(event) = event else { break };
-                match event {
-                    AgentEvent::Started => println!("[{agent_label}] task started"),
-                    AgentEvent::Message(content) => println!("[{agent_label}] {content}"),
-                    AgentEvent::ArtifactUpdated(artifact) => artifacts.push(artifact),
-                    AgentEvent::StatusChanged(status) => {
-                        println!("[{agent_label}] status: {}", status_label(status));
-                    }
-                    AgentEvent::Completed => {
-                        println!("[{agent_label}] task completed");
-                        task_ok = true;
-                    }
-                    AgentEvent::Failed(message) => {
-                        println!("[{agent_label}] failed: {message}");
-                    }
-                }
-            }
-            signal = tokio::signal::ctrl_c() => {
-                signal?;
-                eprintln!("[agentmesh] interrupted, cancelling task...");
-                let _ = run.cancel().await;
-                // Keep draining so the cancellation event is persisted.
-                while let Some(event) = run.next_event().await {
-                    match event {
-                        AgentEvent::StatusChanged(TaskStatus::Cancelled) => {
-                            eprintln!("[{agent_label}] status: cancelled");
-                        }
-                        AgentEvent::Completed => task_ok = true,
-                        AgentEvent::Failed(message) => eprintln!("[{agent_label}] failed: {message}"),
-                        _ => {}
-                    }
-                }
-                break;
-            }
-        }
-    }
-    std::io::stdout().flush()?;
-
-    println!();
-    println!("Task:    {}", run.task_id());
-    println!("Context: {}", run.context_id());
-    if !artifacts.is_empty() {
-        println!("Artifacts:");
-        for artifact in artifacts {
-            println!(
-                "  {} ({})",
-                artifact.name,
-                artifact_kind_label(artifact.kind)
-            );
-        }
-    }
-    if !task_ok {
-        return Err(anyhow!("task `{}` did not complete", run.task_id()));
-    }
-    Ok(())
+    stream_task_to_terminal(&client, &response, false).await
 }
 
 async fn cmd_tasks(
@@ -522,4 +512,251 @@ async fn cmd_diff(context: &AppContext, task_id: Uuid) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+// ---------- daemon helpers ----------
+
+async fn daemon_client_or_err() -> anyhow::Result<agentmesh_daemon::DaemonClient> {
+    let scope = agentmesh_daemon::Scope::resolve();
+    agentmesh_daemon::connect_or_start(scope)
+        .await
+        .map_err(|err| anyhow!("unable to start AgentMesh daemon: {err}"))
+}
+
+/// Stream a task's events from the daemon until terminal.
+async fn stream_task_to_terminal(
+    client: &agentmesh_daemon::DaemonClient,
+    response: &agentmesh_daemon::protocol::RunResponse,
+    detach_only: bool,
+) -> anyhow::Result<()> {
+    let task_id = response.task_id;
+    let agent_id = response.agent_id.clone();
+    let mut metadata_printed = false;
+    let mut last_seq = 0u64;
+    let mut task_ok = false;
+
+    let mut stream = Box::pin(client.events(task_id, 0));
+    loop {
+        tokio::select! {
+            event = stream.next() => {
+                let Some(event) = event else { break };
+                let event = event.map_err(|err| anyhow!("daemon stream error: {err}"))?;
+                if let Some(id) = event.id {
+                    last_seq = last_seq.max(id);
+                }
+                match event.data {
+                    agentmesh_daemon::protocol::DaemonStreamEvent::TaskInfo {
+                        task_id, context_id, ..
+                    } => {
+                        if !metadata_printed {
+                            metadata_printed = true;
+                            println!("[{}] task started", agent_id);
+                            _ = task_id;
+                            _ = context_id;
+                        }
+                    }
+                    agentmesh_daemon::protocol::DaemonStreamEvent::Agent { event } => {
+                        match &event {
+                            AgentEvent::Message(content) => println!("[{agent_id}] {content}"),
+                            AgentEvent::StatusChanged(status) => {
+                                println!("[{agent_id}] status: {}", status_label(*status));
+                            }
+                            AgentEvent::Completed => {
+                                println!("[{agent_id}] task completed");
+                                task_ok = true;
+                            }
+                            AgentEvent::Failed(message) => {
+                                println!("[{agent_id}] failed: {message}");
+                            }
+                            AgentEvent::Started => {
+                                println!("[{agent_id}] task started");
+                            }
+                            AgentEvent::ArtifactUpdated(_) => {}
+                        }
+                        if matches!(event, AgentEvent::Completed | AgentEvent::Failed(_)) {
+                            break;
+                        }
+                    }
+                    agentmesh_daemon::protocol::DaemonStreamEvent::ReplayGap { .. } => {}
+                }
+            }
+            signal = tokio::signal::ctrl_c(), if !detach_only => {
+                signal?;
+                eprintln!("[agentmesh] interrupting, cancelling task...");
+                match client.cancel(task_id).await {
+                    Ok(()) => {
+                        // Wait for the daemon to land the terminal state.
+                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                        loop {
+                            if let Ok(Some(task)) = client.get_task(task_id).await {
+                                let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                if status == "cancelled" || status == "failed" || status == "completed" {
+                                    break;
+                                }
+                            }
+                            if std::time::Instant::now() > deadline {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        }
+                        println!("[{}] status: cancelled", agent_id);
+                    }
+                    Err(err) => {
+                        eprintln!("[agentmesh] failed to contact daemon; task cancellation could not be confirmed: {err}");
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    println!();
+    println!("Task:    {task_id}");
+    if !task_ok {
+        return Err(anyhow!("task `{task_id}` did not complete"));
+    }
+    Ok(())
+}
+
+async fn cmd_attach(client: &agentmesh_daemon::DaemonClient, task_id: Uuid) -> anyhow::Result<()> {
+    // Terminal tasks cannot stream (messages are not persisted); report state.
+    if let Ok(Some(task)) = client.get_task(task_id).await {
+        let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let is_terminal = matches!(status, "completed" | "failed" | "cancelled");
+        if is_terminal {
+            println!("Task is already {}.\nstatus: {status}", status);
+            return Ok(());
+        }
+    }
+    let mut stream = Box::pin(client.events(task_id, 0));
+    let mut first = true;
+    while let Some(event) = stream.next().await {
+        let event = event.map_err(|err| anyhow!("daemon stream error: {err}"))?;
+        match event.data {
+            agentmesh_daemon::protocol::DaemonStreamEvent::TaskInfo { task_id, .. } => {
+                if first {
+                    println!("Attached to task {task_id} (Ctrl+C detaches)");
+                    first = false;
+                }
+            }
+            agentmesh_daemon::protocol::DaemonStreamEvent::Agent { event } => {
+                let terminal = matches!(event, AgentEvent::Completed | AgentEvent::Failed(_));
+                match &event {
+                    AgentEvent::Message(content) => println!("{content}"),
+                    AgentEvent::StatusChanged(status) => {
+                        println!("status: {}", status_label(*status));
+                    }
+                    AgentEvent::Completed => println!("task completed"),
+                    AgentEvent::Failed(message) => println!("failed: {message}"),
+                    AgentEvent::Started => println!("task started"),
+                    AgentEvent::ArtifactUpdated(_) => {}
+                }
+                if terminal {
+                    break;
+                }
+            }
+            agentmesh_daemon::protocol::DaemonStreamEvent::ReplayGap { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_cancel(client: &agentmesh_daemon::DaemonClient, task_id: Uuid) -> anyhow::Result<()> {
+    match client.cancel(task_id).await {
+        Ok(()) => {
+            // Wait for the daemon to confirm the terminal state.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let mut final_status = String::from("cancelling");
+            loop {
+                if let Ok(Some(task)) = client.get_task(task_id).await
+                    && let Some(status) = task.get("status").and_then(|v| v.as_str())
+                {
+                    final_status = status.to_string();
+                    if matches!(status, "completed" | "failed" | "cancelled") {
+                        break;
+                    }
+                }
+                if std::time::Instant::now() > deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+            println!("Task cancelled.");
+            println!("status: {final_status}");
+            Ok(())
+        }
+        Err(err) => Err(anyhow!(
+            "failed to contact daemon; task cancellation could not be confirmed: {err}"
+        )),
+    }
+}
+
+async fn cmd_daemon_start() -> anyhow::Result<()> {
+    let scope = agentmesh_daemon::Scope::resolve();
+    if let Ok(client) = agentmesh_daemon::probe(&scope).await {
+        let health = client.health().await?;
+        println!(
+            "AgentMesh daemon is already running (instance {}).",
+            health.instance_id
+        );
+        return Ok(());
+    }
+    agentmesh_daemon::connect_or_start(scope)
+        .await
+        .map_err(|err| anyhow!("failed to start daemon: {err}"))?;
+    println!("AgentMesh daemon started.");
+    Ok(())
+}
+
+async fn cmd_daemon_status() -> anyhow::Result<()> {
+    let scope = agentmesh_daemon::Scope::resolve();
+    let client = match agentmesh_daemon::probe(&scope).await {
+        Ok(client) => client,
+        Err(_) => {
+            println!(
+                "AgentMesh Daemon\n\nstatus: not running\nscope: {}",
+                scope.label()
+            );
+            return Ok(());
+        }
+    };
+    let health = client.health().await?;
+    let runtime = client.runtime().await?;
+    println!("AgentMesh Daemon");
+    println!();
+    println!("status:   running");
+    println!("instance: {}", &health.instance_id[..8]);
+    let meta = agentmesh_daemon::runtime::read_metadata(&scope);
+    if let Some(meta) = meta {
+        println!("pid:      {}", meta.pid);
+        println!("address:  {}", meta.address);
+        println!("protocol: {}", meta.protocol_version);
+        println!("started:  {}", meta.started_at);
+    }
+    println!("live tasks: {}", runtime.live_tasks.len());
+    for task in runtime.live_tasks {
+        println!("  {} ({})", task.task_id, task.status);
+    }
+    println!("scope:    {}", scope.label());
+    Ok(())
+}
+
+async fn cmd_daemon_stop(force: bool) -> anyhow::Result<()> {
+    let scope = agentmesh_daemon::Scope::resolve();
+    let client = agentmesh_daemon::probe(&scope)
+        .await
+        .map_err(|err| anyhow!("daemon is not running: {err}"))?;
+    match client.shutdown(force).await {
+        Ok(response) => {
+            if response.cancelled_tasks > 0 {
+                println!(
+                    "Cancelled {} running task(s) before shutdown.",
+                    response.cancelled_tasks
+                );
+            }
+            println!("AgentMesh daemon stopped.");
+            Ok(())
+        }
+        Err(err) => Err(anyhow!("{err}")),
+    }
 }

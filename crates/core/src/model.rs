@@ -56,6 +56,7 @@ pub struct AgentDescriptor {
 /// wire protocol: renaming the enum variants must not silently corrupt
 /// stored databases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Submitted,
     Working,

@@ -18,7 +18,6 @@ use agentmesh_workspace::WorkspaceManager;
 /// Kept out of `core`: the daemon may build its own context later.
 pub struct AppContext {
     pub registry: Arc<AgentRegistry>,
-    pub task_manager: TaskManager,
     pub database_path: PathBuf,
     pub tasks: TaskRepository,
     pub artifacts: ArtifactRepository,
@@ -41,7 +40,7 @@ impl AppContext {
         let sessions = AgentSessionRepository::new(database.clone());
         let workspace_repo = WorkspaceRepository::new(database.clone());
         let workspaces = Arc::new(WorkspaceManager::with_default_root(workspace_repo));
-        let task_manager = TaskManager::new(
+        let _task_manager = TaskManager::new(
             registry.clone(),
             tasks.clone(),
             artifacts.clone(),
@@ -52,7 +51,6 @@ impl AppContext {
 
         Ok(Self {
             registry,
-            task_manager,
             database_path: path,
             tasks,
             artifacts,

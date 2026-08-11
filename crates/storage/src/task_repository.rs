@@ -268,6 +268,66 @@ impl TaskRepository {
         self.set_status(id, TaskStatus::Completed).await
     }
 
+    /// Record which daemon instance owns the task's live runtime.
+    pub async fn set_runtime_owner(&self, id: Uuid, instance_id: &str) -> Result<(), StorageError> {
+        sqlx::query("UPDATE tasks SET runtime_owner = ? WHERE id = ?")
+            .bind(instance_id)
+            .bind(id.to_string())
+            .execute(self.database.pool())
+            .await
+            .map_err(|source| StorageError::UpdateTaskStatus {
+                task_id: id.to_string(),
+                status: "runtime_owner".to_string(),
+                source,
+            })?;
+        Ok(())
+    }
+
+    /// Update the runtime heartbeat timestamp.
+    pub async fn heartbeat(&self, id: Uuid) -> Result<(), StorageError> {
+        sqlx::query("UPDATE tasks SET runtime_heartbeat_at = ? WHERE id = ?")
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(self.database.pool())
+            .await
+            .map_err(|source| StorageError::UpdateTaskStatus {
+                task_id: id.to_string(),
+                status: "runtime_heartbeat_at".to_string(),
+                source,
+            })?;
+        Ok(())
+    }
+
+    /// Fail all non-terminal tasks owned by a dead daemon instance.
+    ///
+    /// Only tasks whose `runtime_owner` is set and differs from
+    /// `current_instance_id` are touched; unowned (legacy) tasks are kept
+    /// as-is because nobody can prove they are stale.
+    pub async fn recover_stale_owned_tasks(
+        &self,
+        current_instance_id: &str,
+    ) -> Result<u64, StorageError> {
+        let result = sqlx::query(
+            "UPDATE tasks
+             SET status = 'failed',
+                 error = 'AgentMesh daemon terminated before task completion.',
+                 completed_at = ?
+             WHERE status IN ('submitted', 'working', 'input_required')
+               AND runtime_owner IS NOT NULL
+               AND runtime_owner != ?",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(current_instance_id)
+        .execute(self.database.pool())
+        .await
+        .map_err(|source| StorageError::UpdateTaskStatus {
+            task_id: "*".to_string(),
+            status: "recover_stale".to_string(),
+            source,
+        })?;
+        Ok(result.rows_affected())
+    }
+
     /// Update the workspace the task ran in.
     pub async fn set_workspace(
         &self,
