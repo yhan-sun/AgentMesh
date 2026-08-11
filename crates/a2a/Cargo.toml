@@ -1,0 +1,13 @@
+[package]
+name = "agentmesh-a2a"
+description = "A2A protocol types for AgentMesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-core = { path = "../core" }
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

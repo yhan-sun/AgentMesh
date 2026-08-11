@@ -1,0 +1,17 @@
+[package]
+name = "agentmesh-adapters"
+description = "Unified adapter interface and built-in adapters for coding agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-core = { path = "../core" }
+agentmesh-runtime = { path = "../runtime" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

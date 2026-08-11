@@ -1,0 +1,24 @@
+[package]
+name = "agentmesh-tasks"
+description = "TaskManager: runs tasks through adapters while persisting state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-adapters = { path = "../adapters" }
+agentmesh-core = { path = "../core" }
+agentmesh-storage = { path = "../storage" }
+agentmesh-workspace = { version = "0.1.0", path = "../workspace" }
+chrono.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+agentmesh-adapters = { path = "../adapters" }
+async-trait.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tempfile.workspace = true
+tokio.workspace = true

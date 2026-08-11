@@ -1,0 +1,19 @@
+[package]
+name = "agentmesh-storage"
+description = "AgentMesh state persistence (SQLite)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-core = { path = "../core" }
+chrono.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

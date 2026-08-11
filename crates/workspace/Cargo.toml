@@ -1,0 +1,19 @@
+[package]
+name = "agentmesh-workspace"
+description = "Git workspace manager: isolated worktrees for agent sessions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-core = { path = "../core" }
+agentmesh-storage = { path = "../storage" }
+chrono.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
