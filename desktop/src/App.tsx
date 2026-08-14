@@ -9,6 +9,7 @@ import {
   Play,
   RefreshCw,
 } from "lucide-react";
+import { CustomSelect } from "./components/CustomSelect";
 import {
   DoctorStatus,
   TaskItem,
@@ -44,6 +45,65 @@ export default function App() {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [workflowDetail, setWorkflowDetail] = useState<WorkflowDetail | null>(null);
   const [auditReport, setAuditReport] = useState<ProvenanceAuditReport | null>(null);
+
+  // Dropdown options
+  const agentOptions = [
+    {
+      value: "claude",
+      label: "Claude Code",
+      subLabel: "Anthropic Claude Architecture",
+      badge: "claude",
+      badgeType: "ready" as const,
+      icon: <Bot size={16} />,
+    },
+    {
+      value: "codex",
+      label: "Codex",
+      subLabel: "OpenAI GPT / Codex Agent",
+      badge: "codex",
+      badgeType: "ready" as const,
+      icon: <Bot size={16} />,
+    },
+    {
+      value: "opencode",
+      label: "OpenCode",
+      subLabel: "OpenCode Assistant",
+      badge: "opencode",
+      badgeType: "ready" as const,
+      icon: <Bot size={16} />,
+    },
+    {
+      value: "antigravity",
+      label: "Antigravity",
+      subLabel: "AGY Autonomous Agent",
+      badge: "agy",
+      badgeType: "ready" as const,
+      icon: <Bot size={16} />,
+    },
+    {
+      value: "mock",
+      label: "Mock Agent",
+      subLabel: "Built-in deterministic test agent",
+      badge: "mock",
+      badgeType: "ready" as const,
+      icon: <Bot size={16} />,
+    },
+  ];
+
+  const taskOptions = [
+    {
+      value: "",
+      label: "Start Fresh Context",
+      subLabel: "New clean session without inheritance",
+    },
+    ...tasks.map((t) => ({
+      value: t.id,
+      label: `[${t.agent_id}] ${t.prompt.substring(0, 42)}...`,
+      subLabel: `ID: ${t.id.substring(0, 8)} | ${t.created_at.substring(0, 19)}`,
+      badge: t.agent_id,
+      badgeType: (t.status === "completed" ? "completed" : "pending") as "completed" | "pending",
+    })),
+  ];
 
   // Initial load
   useEffect(() => {
@@ -235,35 +295,24 @@ export default function App() {
                   <div className="grid-2">
                     <div className="input-group">
                       <label className="input-label">Target Agent</label>
-                      <select
-                        className="select-input"
+                      <CustomSelect
+                        options={agentOptions}
                         value={selectedAgent}
-                        onChange={(e) => setSelectedAgent(e.target.value)}
-                      >
-                        <option value="claude">Claude Code</option>
-                        <option value="codex">Codex (OpenAI)</option>
-                        <option value="opencode">OpenCode</option>
-                        <option value="antigravity">Antigravity (AGY)</option>
-                        <option value="mock">Mock Agent</option>
-                      </select>
+                        onChange={setSelectedAgent}
+                        placeholder="Select agent..."
+                      />
                     </div>
 
                     <div className="input-group">
                       <label className="input-label">
                         Inherit Context From (Cross-Agent Handoff)
                       </label>
-                      <select
-                        className="select-input"
+                      <CustomSelect
+                        options={taskOptions}
                         value={fromTaskId}
-                        onChange={(e) => setFromTaskId(e.target.value)}
-                      >
-                        <option value="">-- Start Fresh Context --</option>
-                        {tasks.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            [{t.agent_id}] {t.prompt.substring(0, 40)}... ({t.id.substring(0, 8)})
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setFromTaskId}
+                        placeholder="Select previous task context..."
+                      />
                     </div>
                   </div>
 
