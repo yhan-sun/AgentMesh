@@ -65,4 +65,10 @@ impl SessionLeaseManager {
     pub fn release(&self, session_id: Uuid) {
         self.leases.lock().unwrap().remove(&session_id);
     }
+
+    /// Whether a session currently holds an active lease (Phase 14 cleanup
+    /// guard).
+    pub fn is_leased(&self, session_id: Uuid) -> bool {
+        self.leases.lock().unwrap().contains_key(&session_id)
+    }
 }

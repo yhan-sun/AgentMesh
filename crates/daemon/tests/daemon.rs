@@ -7,13 +7,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use agentmesh_adapters::{
     AgentError, AgentHealth, AgentRegistry, AgentRunHandle, AgentRunRequest, CodingAgentAdapter,
 };
+use agentmesh_apply::ApplyManager;
 use agentmesh_core::{AgentDescriptor, AgentEvent, Artifact, TaskStatus, WorkspaceRequirement};
 use agentmesh_daemon::lease::SessionLeaseManager;
 use agentmesh_daemon::registry::LiveTaskRegistry;
 use agentmesh_daemon::server::{self, DaemonState};
 use agentmesh_storage::{
-    AgentSessionRepository, ArtifactRepository, ContextRepository, Database, TaskRepository,
-    WorkspaceRepository,
+    AgentSessionRepository, ApplyRepository, ArtifactRepository, ContextRepository, Database,
+    TaskRepository, WorkflowPlanRepository, WorkflowReplanRepository, WorkflowRepository,
+    WorkflowStepRepository, WorkspaceRepository,
 };
 use agentmesh_tasks::TaskManager;
 use agentmesh_workspace::WorkspaceManager;
@@ -185,14 +187,47 @@ async fn test_env() -> TestEnv {
         artifacts,
         contexts,
         sessions,
-        workspaces,
+        workspaces.clone(),
     );
     let instance_id = Uuid::new_v4();
     let token = "test-token-1234567890abcdef".to_string();
+    let competitions_repo = agentmesh_storage::CompetitionRepository::new(db.clone());
+    let workflows = agentmesh_daemon::workflow_service::WorkflowService::new(
+        instance_id,
+        manager.clone(),
+        WorkflowRepository::new(db.clone()),
+        WorkflowStepRepository::new(db.clone()),
+        WorkflowPlanRepository::new(db.clone()),
+        WorkflowReplanRepository::new(db.clone()),
+        agentmesh_storage::EvaluationRepository::new(db.clone()),
+        competitions_repo.clone(),
+        workspaces.clone(),
+        agentmesh_orchestrator::router::RuleRouter::new(
+            agentmesh_core::AgentMeshConfig::load().routing_config(),
+        ),
+    );
+    let workflows_repo = WorkflowRepository::new(db.clone());
+    let steps = WorkflowStepRepository::new(db.clone());
+    let applies = ApplyRepository::new(db.clone());
+    let artifacts = ArtifactRepository::new(db.clone());
+    let apply = Arc::new(
+        ApplyManager::new(
+            tasks.clone(),
+            workspaces.clone(),
+            workflows_repo.clone(),
+            steps.clone(),
+            applies.clone(),
+        )
+        .with_competitions(competitions_repo.clone()),
+    );
+    let plans = agentmesh_daemon::planner::PlanService::new(
+        workflows.clone(),
+        WorkflowPlanRepository::new(db.clone()),
+    );
     let state = Arc::new(DaemonState {
         instance_id,
         token: token.clone(),
-        task_manager: manager,
+        task_manager: manager.clone(),
         registry: LiveTaskRegistry::new(),
         leases: Arc::new(SessionLeaseManager::new()),
         scope: agentmesh_daemon::Scope::User,
@@ -200,6 +235,29 @@ async fn test_env() -> TestEnv {
         shutdown: Arc::new(Notify::new()),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
         task_repo: tasks,
+        workflows: workflows.clone(),
+        plans,
+        replans: agentmesh_daemon::replan::ReplanService::new(
+            workflows.clone(),
+            agentmesh_storage::WorkflowReplanRepository::new(db.clone()),
+        ),
+        recoveries: agentmesh_daemon::recovery::RecoveryService::new(
+            workflows.clone(),
+            agentmesh_storage::WorkflowRecoveryRepository::new(db.clone()),
+            workspaces.clone(),
+        ),
+        apply,
+        workspaces,
+        applies,
+        workflows_repo,
+        steps,
+        competitions: competitions_repo,
+        artifacts,
+        a2a_agents: std::sync::Mutex::new(serde_json::json!({})),
+        provenance: Arc::new(
+            agentmesh_daemon::provenance_service::ProvenanceService::from_db(db.clone()),
+        ),
+        provenance_repo: agentmesh_storage::ProvenanceRepository::new(db.clone()),
     });
     let (addr, router, listener) = server::bind(state.clone()).await.expect("bind");
     tokio::spawn(server::serve(listener, router, state.shutdown.clone()));
@@ -460,12 +518,23 @@ async fn runtime_endpoint_reports_live_tasks() {
     env.started.notified().await;
 
     let runtime = client(&env).runtime().await.expect("runtime");
-    assert_eq!(runtime.instance_id, env.state.instance_id.to_string());
-    assert!(
+    assert_eq!(
         runtime
-            .live_tasks
+            .get("instance_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        env.state.instance_id.to_string()
+    );
+    let live_tasks = runtime
+        .get("live_tasks")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        live_tasks
             .iter()
-            .any(|t| t.task_id == response.task_id),
+            .any(|t| t.get("task_id").and_then(|v| v.as_str())
+                == Some(&response.task_id.to_string())),
         "live task must be listed"
     );
     env.release.notify_one();

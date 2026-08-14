@@ -19,7 +19,7 @@ use agentmesh_core::{
     WorkspaceRequirement,
 };
 use agentmesh_storage::{
-    AgentSessionRepository, ArtifactRepository, ContextRepository, TaskRepository,
+    AgentSessionRepository, ArtifactRepository, ContextRepository, TaskFilter, TaskRepository,
 };
 use agentmesh_workspace::{Workspace, WorkspaceError, WorkspaceManager};
 use tokio::sync::mpsc;
@@ -68,6 +68,9 @@ pub enum TaskError {
 
     #[error("workspace error: {0}")]
     Workspace(#[from] agentmesh_workspace::WorkspaceError),
+
+    #[error("agent `{agent_id}` has no session in context {context_id}")]
+    SessionForAgentNotFound { context_id: Uuid, agent_id: String },
 }
 
 /// A running task: the persisted task ids plus a live event stream.
@@ -265,6 +268,128 @@ impl TaskManager {
             .await
     }
 
+    /// Start a task inside an existing context for the given agent.
+    ///
+    /// Reuses the context's agent session (and its native session +
+    /// workspace when available): the session's native session is resumed
+    /// when one exists, otherwise the agent starts fresh inside the context.
+    /// Creates a new task; the caller must hold the session lease.
+    pub async fn start_in_context(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+        request: AgentRunRequest,
+    ) -> Result<ManagedTaskRun, TaskError> {
+        self.start_in_context_with_metadata(
+            context_id,
+            agent_id,
+            request,
+            ExecutionMetadata::default(),
+        )
+        .await
+    }
+
+    /// [`Self::start_in_context`] with execution metadata.
+    pub async fn start_in_context_with_metadata(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+        request: AgentRunRequest,
+        metadata: ExecutionMetadata,
+    ) -> Result<ManagedTaskRun, TaskError> {
+        self.start_in_context_lane_with_metadata(
+            context_id,
+            agent_id,
+            agentmesh_core::DEFAULT_SESSION_LANE,
+            request,
+            metadata,
+        )
+        .await
+    }
+
+    /// [`Self::start_in_context`] with a specific session lane and execution metadata.
+    pub async fn start_in_context_lane_with_metadata(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+        session_lane: &str,
+        request: AgentRunRequest,
+        metadata: ExecutionMetadata,
+    ) -> Result<ManagedTaskRun, TaskError> {
+        self.ensure_context(context_id).await?;
+        let session = self
+            .sessions
+            .get_by_context_agent_lane(context_id, agent_id, session_lane)
+            .await?
+            .ok_or(TaskError::SessionForAgentNotFound {
+                context_id,
+                agent_id: agent_id.to_string(),
+            })?;
+
+        // Workspace: reuse the session's workspace when bound; otherwise
+        // provision an isolated worktree for a new agent joining the context
+        // (Phase 11), deriving the source repository from an existing
+        // workspace in the context.
+        let execution_workspace = self.provision_context_workspace(&session, &request).await?;
+        let workspace = execution_workspace
+            .as_ref()
+            .map(|workspace| workspace.path.clone());
+
+        let adapter = self
+            .registry
+            .get(agent_id)
+            .map_err(|_| TaskError::AgentNotFound(agent_id.to_string()))?;
+
+        let mut task =
+            AgentTask::with_workspace(agent_id, request.input.clone(), workspace.clone());
+        task.context_id = context_id;
+        task.agent_session_id = Some(session.id);
+
+        self.contexts
+            .create_task_for_context(&self.ensure_context(context_id).await?, &session, &task)
+            .await?;
+        if let Some(owner) = &metadata.runtime_owner {
+            self.tasks.set_runtime_owner(task.id, owner).await?;
+        }
+
+        let mut run_request = self.build_request(&request, &task);
+        run_request.workspace = workspace;
+
+        // Continue the native session when one exists; otherwise start fresh
+        // inside the context.
+        let handle = match session.native_session_id.as_deref() {
+            Some(native) => {
+                tracing::debug!(
+                    task_id = %task.id,
+                    context_id = %context_id,
+                    session_id = %session.id,
+                    native_session = shortened(native),
+                    "context continuation: resuming native session"
+                );
+                match adapter.resume(native, run_request).await {
+                    Ok(handle) => handle,
+                    Err(err) => {
+                        let message = err.to_string();
+                        self.tasks.set_error(task.id, &message).await?;
+                        return Err(TaskError::AdapterStart(agent_id.to_string(), err));
+                    }
+                }
+            }
+            None => match adapter.start(run_request).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    let message = err.to_string();
+                    self.tasks.set_error(task.id, &message).await?;
+                    return Err(TaskError::AdapterStart(agent_id.to_string(), err));
+                }
+            },
+        };
+
+        self.tasks.mark_started(task.id).await?;
+        let run = self.wrap_run(task, session.id, execution_workspace, handle);
+        Ok(run)
+    }
+
     /// Resume with execution metadata (e.g. the owning daemon instance).
     pub async fn resume_with_metadata(
         &self,
@@ -373,6 +498,170 @@ impl TaskManager {
             .agent_session_id
             .ok_or(TaskError::NativeSessionUnavailable(source_task_id))?;
         Ok((source.context_id, session_id))
+    }
+
+    /// Resolve the agent session bound to a (context, agent) pair, without
+    /// starting anything. Used by A2A contextId continuation.
+    pub async fn resolve_context_session(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+    ) -> Result<Uuid, TaskError> {
+        self.resolve_context_session_in_lane(
+            context_id,
+            agent_id,
+            agentmesh_core::DEFAULT_SESSION_LANE,
+        )
+        .await
+    }
+
+    /// Resolve the agent session bound to a (context, agent, lane) tuple.
+    pub async fn resolve_context_session_in_lane(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+        session_lane: &str,
+    ) -> Result<Uuid, TaskError> {
+        self.sessions
+            .get_by_context_agent_lane(context_id, agent_id, session_lane)
+            .await?
+            .map(|session| session.id)
+            .ok_or(TaskError::SessionForAgentNotFound {
+                context_id,
+                agent_id: agent_id.to_string(),
+            })
+    }
+
+    /// Resolve the agent session for a (context, agent) pair, creating it
+    /// when the agent joins the context for the first time.
+    ///
+    /// A workflow spans several agents inside one context; each agent gets
+    /// its own session (Phase 10 invariant: `claude` -> `codex` creates a
+    /// session per agent, while resuming `claude` reuses its session). The
+    /// caller must hold the session lease before starting a task.
+    pub async fn resolve_or_create_context_session(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+    ) -> Result<Uuid, TaskError> {
+        self.resolve_or_create_context_session_in_lane(
+            context_id,
+            agent_id,
+            agentmesh_core::DEFAULT_SESSION_LANE,
+        )
+        .await
+    }
+
+    /// Resolve or create the agent session for a (context, agent, session_lane) tuple.
+    pub async fn resolve_or_create_context_session_in_lane(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+        session_lane: &str,
+    ) -> Result<Uuid, TaskError> {
+        self.ensure_context(context_id).await?;
+        if let Some(session) = self
+            .sessions
+            .get_by_context_agent_lane(context_id, agent_id, session_lane)
+            .await?
+        {
+            return Ok(session.id);
+        }
+        let session = AgentSession::with_lane(context_id, agent_id, session_lane);
+        if let Err(create_err) = self.sessions.create(&session).await {
+            // Concurrent creation for the same (context, agent, lane) is serialized
+            // by the UNIQUE(context_id, agent_id, session_lane) constraint; re-fetch instead
+            // of failing when a peer won the race.
+            if let Some(session) = self
+                .sessions
+                .get_by_context_agent_lane(context_id, agent_id, session_lane)
+                .await?
+            {
+                tracing::debug!(
+                    context_id = %context_id,
+                    agent = agent_id,
+                    lane = session_lane,
+                    "agent session created concurrently; reusing it"
+                );
+                return Ok(session.id);
+            }
+            return Err(create_err.into());
+        }
+        tracing::debug!(
+            session_id = %session.id,
+            context_id = %context_id,
+            agent = agent_id,
+            lane = session_lane,
+            "created new agent session inside existing context and lane"
+        );
+        Ok(session.id)
+    }
+
+    /// Ensure a session running in a context has an isolated worktree.
+    ///
+    /// Reuses the session workspace when already bound. For a fresh session
+    /// whose agent requires isolation, creates a worktree in the context's
+    /// repository, deriving the source repository from another workspace
+    /// already bound to the context (never another agent's dirty worktree).
+    async fn provision_context_workspace(
+        &self,
+        session: &AgentSession,
+        request: &AgentRunRequest,
+    ) -> Result<Option<Workspace>, TaskError> {
+        // Reuse an already-bound session workspace (verifies it still exists).
+        match self.workspaces.workspace_for_session(session.id).await {
+            Ok(workspace) => return Ok(Some(workspace)),
+            Err(WorkspaceError::WorkspaceNotFound(_)) => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        // Only agents that require isolation get a worktree.
+        let adapter = self
+            .registry
+            .get(&session.agent_id)
+            .map_err(|_| TaskError::AgentNotFound(session.agent_id.clone()))?;
+        if adapter.descriptor().workspace_requirement != WorkspaceRequirement::IsolatedGit {
+            return Ok(None);
+        }
+
+        // Source repository: a workspace already bound to the context, else
+        // the caller's requested workspace, else the current directory.
+        let source_path = match self.context_workspace_root(session.context_id).await? {
+            Some(root) => root,
+            None => request
+                .workspace
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(".")),
+        };
+        let workspace = self
+            .workspaces
+            .ensure_workspace(session, &source_path)
+            .await?;
+        self.sessions
+            .set_workspace(session.id, Some(&workspace.path))
+            .await?;
+        Ok(Some(workspace))
+    }
+
+    /// The repository root of the first active workspace bound to any session
+    /// in a context, if one exists. This is the *original* repository, not a
+    /// sibling worktree.
+    async fn context_workspace_root(
+        &self,
+        context_id: Uuid,
+    ) -> Result<Option<std::path::PathBuf>, TaskError> {
+        for session in self.sessions.list_by_context(context_id).await? {
+            if let Ok(Some(row)) = self
+                .workspaces
+                .repository()
+                .get_by_agent_session(session.id)
+                .await
+                && row.state == agentmesh_storage::WorkspaceState::Active
+            {
+                return Ok(Some(row.repository_root));
+            }
+        }
+        Ok(None)
     }
 
     async fn ensure_context(&self, context_id: Uuid) -> Result<Context, TaskError> {
@@ -557,6 +846,21 @@ impl TaskManager {
     /// Look up a persisted task (convenience for callers without a repository).
     pub async fn get_task(&self, task_id: Uuid) -> Result<Option<AgentTask>, TaskError> {
         Ok(self.tasks.get(task_id).await?)
+    }
+
+    /// List tasks with the given filter.
+    pub async fn list_tasks(&self, filter: &TaskFilter) -> Result<Vec<AgentTask>, TaskError> {
+        Ok(self.tasks.list(filter).await?)
+    }
+
+    /// Access the agent registry (for discovery).
+    pub fn registry(&self) -> &Arc<AgentRegistry> {
+        &self.registry
+    }
+
+    /// List artifacts of a task.
+    pub async fn list_artifacts(&self, task_id: Uuid) -> Result<Vec<Artifact>, TaskError> {
+        Ok(self.artifacts.list_by_task(task_id).await?)
     }
 }
 

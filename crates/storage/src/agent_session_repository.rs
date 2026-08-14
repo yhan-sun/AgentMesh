@@ -23,12 +23,13 @@ impl AgentSessionRepository {
     /// starts).
     pub async fn create(&self, session: &AgentSession) -> Result<(), StorageError> {
         sqlx::query(
-            "INSERT INTO agent_sessions (id, context_id, agent_id, native_session_id, workspace, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO agent_sessions (id, context_id, agent_id, session_lane, native_session_id, workspace, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
         .bind(session.context_id.to_string())
         .bind(&session.agent_id)
+        .bind(&session.session_lane)
         .bind(session.native_session_id.as_deref())
         .bind(session.workspace.as_ref().map(|p| p.display().to_string()))
         .bind(session.created_at.to_rfc3339())
@@ -45,7 +46,7 @@ impl AgentSessionRepository {
     /// Load a session by id; `Ok(None)` when it does not exist.
     pub async fn get(&self, id: Uuid) -> Result<Option<AgentSession>, StorageError> {
         let row = sqlx::query(
-            "SELECT id, context_id, agent_id, native_session_id, workspace, created_at, updated_at
+            "SELECT id, context_id, agent_id, session_lane, native_session_id, workspace, created_at, updated_at
              FROM agent_sessions WHERE id = ?",
         )
         .bind(id.to_string())
@@ -58,18 +59,30 @@ impl AgentSessionRepository {
         row.map(|row| row_to_session(&row)).transpose()
     }
 
-    /// Load the session for a (context, agent) pair.
+    /// Load the session for a (context, agent) pair in the default lane.
     pub async fn get_by_context_agent(
         &self,
         context_id: Uuid,
         agent_id: &str,
     ) -> Result<Option<AgentSession>, StorageError> {
+        self.get_by_context_agent_lane(context_id, agent_id, agentmesh_core::DEFAULT_SESSION_LANE)
+            .await
+    }
+
+    /// Load the session for a (context, agent, session_lane) tuple.
+    pub async fn get_by_context_agent_lane(
+        &self,
+        context_id: Uuid,
+        agent_id: &str,
+        session_lane: &str,
+    ) -> Result<Option<AgentSession>, StorageError> {
         let row = sqlx::query(
-            "SELECT id, context_id, agent_id, native_session_id, workspace, created_at, updated_at
-             FROM agent_sessions WHERE context_id = ? AND agent_id = ?",
+            "SELECT id, context_id, agent_id, session_lane, native_session_id, workspace, created_at, updated_at
+             FROM agent_sessions WHERE context_id = ? AND agent_id = ? AND session_lane = ?",
         )
         .bind(context_id.to_string())
         .bind(agent_id)
+        .bind(session_lane)
         .fetch_optional(self.database.pool())
         .await
         .map_err(|source| StorageError::LoadSession {
@@ -77,6 +90,26 @@ impl AgentSessionRepository {
             source,
         })?;
         row.map(|row| row_to_session(&row)).transpose()
+    }
+
+    /// All sessions bound to a context, in no particular order. Used to find
+    /// an existing workspace when a new agent joins the context (Phase 11).
+    pub async fn list_by_context(
+        &self,
+        context_id: Uuid,
+    ) -> Result<Vec<AgentSession>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT id, context_id, agent_id, session_lane, native_session_id, workspace, created_at, updated_at
+             FROM agent_sessions WHERE context_id = ?",
+        )
+        .bind(context_id.to_string())
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(|source| StorageError::LoadSession {
+            session_id: context_id.to_string(),
+            source,
+        })?;
+        rows.iter().map(row_to_session).collect()
     }
 
     /// Update the native session id.
@@ -160,6 +193,9 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> Result<AgentSession, Storage
             source: sqlx::Error::Decode(err.to_string().into()),
         })?,
         agent_id: row.get("agent_id"),
+        session_lane: row
+            .try_get("session_lane")
+            .unwrap_or_else(|_| agentmesh_core::DEFAULT_SESSION_LANE.to_string()),
         native_session_id: row.get("native_session_id"),
         workspace: row
             .get::<Option<String>, _>("workspace")

@@ -1,0 +1,27 @@
+[package]
+name = "agentmesh-orchestrator"
+description = "AgentMesh orchestrator: agent discovery, rule routing, single-hop delegation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-a2a = { path = "../a2a" }
+agentmesh-core = { path = "../core" }
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+agentmesh-a2a = { path = "../a2a" }
+agentmesh-core = { path = "../core" }
+async-stream = "0.3"
+async-trait.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

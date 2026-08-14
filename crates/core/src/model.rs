@@ -170,6 +170,34 @@ pub enum ArtifactKind {
     TestResult,
 }
 
+impl ArtifactKind {
+    /// Stable snake_case key used on the wire (A2A artifact metadata) and in
+    /// workflow handoffs.
+    pub fn key(&self) -> &'static str {
+        match self {
+            ArtifactKind::Text => "text",
+            ArtifactKind::File => "file",
+            ArtifactKind::Patch => "patch",
+            ArtifactKind::Json => "json",
+            ArtifactKind::Log => "log",
+            ArtifactKind::TestResult => "test_result",
+        }
+    }
+
+    /// Parse a stable [`Self::key`]; `None` for unknown keys.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "text" => ArtifactKind::Text,
+            "file" => ArtifactKind::File,
+            "patch" => ArtifactKind::Patch,
+            "json" => ArtifactKind::Json,
+            "log" => ArtifactKind::Log,
+            "test_result" => ArtifactKind::TestResult,
+            _ => return None,
+        })
+    }
+}
+
 /// An agent output that is more structured than a plain message:
 /// files, patches, structured JSON, logs, test results.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,10 +288,17 @@ impl AgentTask {
     }
 }
 
-/// A native agent session bound to a global context.
+pub const DEFAULT_SESSION_LANE: &str = "default";
+
+fn default_session_lane() -> String {
+    DEFAULT_SESSION_LANE.to_string()
+}
+
+/// A native agent session bound to a global context and session lane.
 ///
 /// Sessions and contexts are deliberately separate: one global context may
 /// span many agent sessions (e.g. `claude` -> `codex` -> resume `claude`).
+/// Phase 23 generalizes this to (context_id, agent_id, session_lane).
 /// The `native_session_id` belongs entirely to the concrete adapter
 /// (Claude Code session id, Codex thread id, ...) and is stored per session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +307,9 @@ pub struct AgentSession {
     pub context_id: Uuid,
     /// Vendor-neutral agent identifier, e.g. `claude` or `codex`.
     pub agent_id: String,
+    /// Logical lane for session isolation within a context (default: "default").
+    #[serde(default = "default_session_lane")]
+    pub session_lane: String,
     /// Identifier of the session inside the native agent, once the adapter
     /// reports one. May be `None` before the agent starts.
     pub native_session_id: Option<String>,
@@ -283,11 +321,20 @@ pub struct AgentSession {
 
 impl AgentSession {
     pub fn new(context_id: Uuid, agent_id: impl Into<String>) -> Self {
+        Self::with_lane(context_id, agent_id, DEFAULT_SESSION_LANE)
+    }
+
+    pub fn with_lane(
+        context_id: Uuid,
+        agent_id: impl Into<String>,
+        session_lane: impl Into<String>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
             context_id,
             agent_id: agent_id.into(),
+            session_lane: session_lane.into(),
             native_session_id: None,
             workspace: None,
             created_at: now,
@@ -333,6 +380,49 @@ pub enum TaskIntent {
     UIUX,
     Testing,
     General,
+}
+
+impl TaskIntent {
+    /// Stable snake_case key used in config (`[routing]`) and the CLI.
+    pub fn key(&self) -> &'static str {
+        match self {
+            TaskIntent::Architecture => "architecture",
+            TaskIntent::Implementation => "implementation",
+            TaskIntent::Debug => "debug",
+            TaskIntent::Review => "review",
+            TaskIntent::Testing => "testing",
+            TaskIntent::UIUX => "uiux",
+            TaskIntent::General => "general",
+        }
+    }
+
+    /// The skill this intent maps to (see Phase 9 routing table). The router
+    /// filters agents by the skill their Agent Card declares, never by brand.
+    pub fn skill(&self) -> &'static str {
+        match self {
+            TaskIntent::Architecture => "architecture",
+            TaskIntent::Implementation => "code",
+            TaskIntent::Debug => "debug",
+            TaskIntent::Review => "review",
+            TaskIntent::Testing => "testing",
+            TaskIntent::UIUX => "ui",
+            TaskIntent::General => "code",
+        }
+    }
+
+    /// Parse a stable [`Self::key`]; `None` for unknown keys.
+    pub fn from_key(value: &str) -> Option<Self> {
+        Some(match value {
+            "architecture" => TaskIntent::Architecture,
+            "implementation" => TaskIntent::Implementation,
+            "debug" => TaskIntent::Debug,
+            "review" => TaskIntent::Review,
+            "testing" => TaskIntent::Testing,
+            "uiux" => TaskIntent::UIUX,
+            "general" => TaskIntent::General,
+            _ => return None,
+        })
+    }
 }
 
 /// Unified streaming event emitted by an agent adapter while a task runs.
@@ -441,6 +531,50 @@ mod tests {
         assert!(!TaskStatus::Cancelled.can_transition_to(TaskStatus::Completed));
         assert!(!TaskStatus::Completed.can_transition_to(TaskStatus::Failed));
         assert!(!TaskStatus::Working.can_transition_to(TaskStatus::Submitted));
+    }
+
+    #[test]
+    fn intent_skills_follow_spec() {
+        assert_eq!(TaskIntent::Architecture.skill(), "architecture");
+        assert_eq!(TaskIntent::Implementation.skill(), "code");
+        assert_eq!(TaskIntent::Debug.skill(), "debug");
+        assert_eq!(TaskIntent::Review.skill(), "review");
+        assert_eq!(TaskIntent::Testing.skill(), "testing");
+        assert_eq!(TaskIntent::UIUX.skill(), "ui");
+        assert_eq!(TaskIntent::General.skill(), "code");
+    }
+
+    #[test]
+    fn intent_key_roundtrips() {
+        for key in [
+            "architecture",
+            "implementation",
+            "debug",
+            "review",
+            "testing",
+            "uiux",
+            "general",
+        ] {
+            let intent = TaskIntent::from_key(key).expect(key);
+            assert_eq!(intent.key(), key);
+        }
+        assert_eq!(TaskIntent::from_key("bogus"), None);
+    }
+
+    #[test]
+    fn artifact_kind_key_roundtrips() {
+        for (key, kind) in [
+            ("text", ArtifactKind::Text),
+            ("file", ArtifactKind::File),
+            ("patch", ArtifactKind::Patch),
+            ("json", ArtifactKind::Json),
+            ("log", ArtifactKind::Log),
+            ("test_result", ArtifactKind::TestResult),
+        ] {
+            assert_eq!(kind.key(), key);
+            assert_eq!(ArtifactKind::from_key(key), Some(kind));
+        }
+        assert_eq!(ArtifactKind::from_key("bogus"), None);
     }
 
     #[test]

@@ -3,14 +3,17 @@
 use std::path::{Path, PathBuf};
 
 use agentmesh_core::AgentSession;
-use agentmesh_storage::{WorkspaceRepository, WorkspaceRow, WorkspaceState};
+use agentmesh_storage::{ApplyRepository, WorkspaceRepository, WorkspaceRow, WorkspaceState};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::WorkspaceError;
 use crate::git::{git, git_ok};
-use crate::model::{ChangeStatus, ChangedFile, Workspace, WorkspaceDiff};
+use crate::model::{
+    ChangeStatus, ChangedFile, CleanupContext, CleanupOutcome, CleanupPlan, Workspace,
+    WorkspaceDiff, workspace_snapshot_hash,
+};
 
 /// Where isolated worktrees live:
 /// `<user-data>/workspaces/<repo-key>/<agent-session-id>/`.
@@ -212,11 +215,14 @@ impl WorkspaceManager {
 
     /// Verify a stored workspace is still a valid Git worktree of the same
     /// repository. Missing paths become `missing`; mismatched repositories
-    /// become `invalid`.
+    /// become `invalid`. Workspaces removed by cleanup are never resurrected.
     pub async fn verify_workspace(
         &self,
         workspace: WorkspaceRow,
     ) -> Result<Workspace, WorkspaceError> {
+        if workspace.state == WorkspaceState::Removed {
+            return Err(WorkspaceError::WorkspaceRemoved(workspace.id.to_string()));
+        }
         let path = workspace.path.clone();
         if !path.exists() {
             let _ = self
@@ -371,6 +377,219 @@ impl WorkspaceManager {
             _ => (false, None),
         }
     }
+
+    // ---------- Phase 14: lifecycle, archive and cleanup ----------
+
+    /// Archive a workspace: `state → Archived` only. Never touches files or
+    /// branches; the worktree stays fully viewable.
+    pub async fn archive(&self, workspace_id: Uuid) -> Result<(), WorkspaceError> {
+        let row = self
+            .workspaces
+            .get(workspace_id)
+            .await
+            .map_err(WorkspaceError::Persist)?
+            .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_id.to_string()))?;
+        if row.state == WorkspaceState::Removed {
+            return Err(WorkspaceError::WorkspaceRemoved(workspace_id.to_string()));
+        }
+        self.workspaces
+            .set_state(workspace_id, WorkspaceState::Archived)
+            .await
+            .map_err(WorkspaceError::Persist)?;
+        Ok(())
+    }
+
+    /// Preflight a safe cleanup of a workspace. Never deletes anything.
+    ///
+    /// Every condition of Phase 14 section 7 must hold:
+    /// no live task, no session lease, no active workflow dependency, state is
+    /// `Applied` or `Archived`, a completed apply exists (or archive-only was
+    /// requested), the workspace is unchanged since the apply (snapshot
+    /// fingerprint), and the branch is AgentMesh-managed.
+    ///
+    /// `applies` supplies the apply history (idempotency + snapshot hash); the
+    /// daemon layer supplies `context` with the live-task / lease / workflow
+    /// facts it owns.
+    pub async fn plan_cleanup(
+        &self,
+        workspace_id: Uuid,
+        applies: &ApplyRepository,
+        context: &CleanupContext,
+    ) -> Result<CleanupPlan, WorkspaceError> {
+        let row = self
+            .workspaces
+            .get(workspace_id)
+            .await
+            .map_err(WorkspaceError::Persist)?
+            .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_id.to_string()))?;
+
+        // 1-3. Live ownership: a live task, a session lease or an active
+        // workflow would make removal unsafe.
+        if context.has_live_task {
+            return Err(WorkspaceError::WorkspaceNotSafeToRemove(
+                workspace_id.to_string(),
+                "a live task is bound to this workspace's session".to_string(),
+            ));
+        }
+        if context.has_session_lease {
+            return Err(WorkspaceError::WorkspaceNotSafeToRemove(
+                workspace_id.to_string(),
+                "the agent session holds an active lease".to_string(),
+            ));
+        }
+        if context.has_workflow_dependency {
+            return Err(WorkspaceError::WorkspaceNotSafeToRemove(
+                workspace_id.to_string(),
+                "a running or interrupted workflow depends on this workspace".to_string(),
+            ));
+        }
+
+        // 4. State: only applied or archived workspaces are removed.
+        if row.state != WorkspaceState::Applied && row.state != WorkspaceState::Archived {
+            return Err(WorkspaceError::WorkspaceNotSafeToRemove(
+                workspace_id.to_string(),
+                format!(
+                    "workspace state is `{}`; only applied or archived workspaces are removed",
+                    row.state.as_str()
+                ),
+            ));
+        }
+
+        // 5. Apply record (or explicit archive-only).
+        let has_completed_apply = applies.has_completed_for_workspace(workspace_id).await?;
+        if !has_completed_apply && !context.archive_only {
+            return Err(WorkspaceError::WorkspaceNotSafeToRemove(
+                workspace_id.to_string(),
+                "no successful apply record exists and archive-only was not requested".to_string(),
+            ));
+        }
+
+        // 6. Git identity: the worktree must still exist and belong to the
+        // stored repository.
+        let workspace = self.verify_workspace(row.clone()).await?;
+
+        // 7. Unchanged since apply: recompute the snapshot fingerprint.
+        let diff = self.diff(&workspace).await?;
+        let current_hash = workspace_snapshot_hash(&workspace.path, &diff);
+        let stored_hash = applies.latest_snapshot_hash(workspace_id).await?;
+        let snapshot_matches = match stored_hash.as_deref() {
+            Some(stored) => stored == current_hash,
+            // Archive-only (no apply record): no baseline to compare.
+            None => true,
+        };
+        if has_completed_apply && !snapshot_matches {
+            return Err(WorkspaceError::WorkspaceChangedAfterApply(
+                workspace_id.to_string(),
+            ));
+        }
+
+        // 8. Branch safety: never delete a branch AgentMesh does not own.
+        if !is_managed_branch(&row.branch) {
+            return Err(WorkspaceError::NotManagedBranch(row.branch.clone()));
+        }
+
+        Ok(CleanupPlan {
+            workspace_id,
+            workspace_path: workspace.path.clone(),
+            branch: row.branch.clone(),
+            agent_session_id: workspace.agent_session_id,
+            state: row.state,
+            base_revision: row.base_revision.clone(),
+            has_completed_apply,
+            snapshot_matches,
+            safe: true,
+        })
+    }
+
+    /// Safely remove a workspace after a full [`Self::plan_cleanup`] preflight:
+    /// `git worktree remove`, then delete the AgentMesh-managed branch, then
+    /// `state → Removed`.
+    ///
+    /// The worktree intentionally carries the applied (uncommitted) agent
+    /// result, so `git worktree remove --force` is used internally — the safety
+    /// checks are what matter, and they all passed in the plan. Branch removal
+    /// is verified as AgentMesh-managed first; if it fails the workspace is
+    /// marked `Missing`, never wrongly `Removed`.
+    pub async fn cleanup(
+        &self,
+        workspace_id: Uuid,
+        applies: &ApplyRepository,
+        context: &CleanupContext,
+    ) -> Result<CleanupOutcome, WorkspaceError> {
+        let plan = self.plan_cleanup(workspace_id, applies, context).await?;
+        if !plan.safe {
+            return Err(WorkspaceError::WorkspaceNotSafeToRemove(
+                workspace_id.to_string(),
+                "preflight did not pass".to_string(),
+            ));
+        }
+        let row = self
+            .workspaces
+            .get(workspace_id)
+            .await
+            .map_err(WorkspaceError::Persist)?
+            .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_id.to_string()))?;
+
+        // 1. Remove the worktree (the applied result lives in the source now).
+        let wt = git(
+            &row.repository_root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                row.path.to_str().ok_or_else(|| {
+                    WorkspaceError::Internal("non-UTF8 workspace path".to_string())
+                })?,
+            ],
+        )
+        .await?;
+        if !wt.success() {
+            return Err(WorkspaceError::GitCommand {
+                stderr: wt.stderr.trim().to_string(),
+            });
+        }
+
+        // 2. Delete only the AgentMesh-managed branch.
+        if !is_managed_branch(&row.branch) {
+            // Worktree gone but we must not mark this a clean removal.
+            self.workspaces
+                .set_state(workspace_id, WorkspaceState::Missing)
+                .await
+                .map_err(WorkspaceError::Persist)?;
+            return Err(WorkspaceError::NotManagedBranch(row.branch.clone()));
+        }
+        let br = git(&row.repository_root, &["branch", "-D", &row.branch]).await?;
+        if !br.success() {
+            // Branch deletion failed: the worktree is gone but the branch
+            // remains — never report a clean `Removed`.
+            self.workspaces
+                .set_state(workspace_id, WorkspaceState::Missing)
+                .await
+                .map_err(WorkspaceError::Persist)?;
+            return Err(WorkspaceError::GitCommand {
+                stderr: br.stderr.trim().to_string(),
+            });
+        }
+
+        self.workspaces
+            .set_state(workspace_id, WorkspaceState::Removed)
+            .await
+            .map_err(WorkspaceError::Persist)?;
+        Ok(CleanupOutcome {
+            workspace_id,
+            worktree_removed: true,
+            branch_removed: true,
+            state: WorkspaceState::Removed,
+        })
+    }
+}
+
+/// Whether a branch is one AgentMesh created for an isolated worktree.
+///
+/// AgentMesh branches look like `agentmesh/<agent>/<session-prefix>`. Anything
+/// else is a user branch and must never be deleted by cleanup.
+pub fn is_managed_branch(branch: &str) -> bool {
+    branch.starts_with("agentmesh/")
 }
 
 /// Best-effort canonical path for comparison.

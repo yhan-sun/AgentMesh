@@ -10,17 +10,27 @@ name = "agentmesh"
 path = "src/main.rs"
 
 [dependencies]
+agentmesh-a2a = { path = "../a2a" }
 agentmesh-adapters = { path = "../adapters" }
+agentmesh-apply = { path = "../apply" }
 agentmesh-core = { path = "../core" }
 agentmesh-daemon = { version = "0.1.0", path = "../daemon" }
+agentmesh-orchestrator = { path = "../orchestrator" }
 agentmesh-storage = { path = "../storage" }
 agentmesh-tasks = { path = "../tasks" }
 agentmesh-workspace = { version = "0.1.0", path = "../workspace" }
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+agentmesh-core = { path = "../core" }
+tempfile.workspace = true

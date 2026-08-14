@@ -1,17 +1,25 @@
 //! Workspace persistence.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
 use crate::database::Database;
 use crate::error::StorageError;
 
-/// Lifecycle state of a persisted workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Lifecycle state of a persisted workspace (Phase 14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceState {
+    /// Agent workspace is normally retained.
     Active,
+    /// At least one apply succeeded from this workspace to the source.
+    Applied,
+    /// The user explicitly kept it but it is no longer active.
+    Archived,
+    /// The filesystem workspace is gone.
     Missing,
+    /// AgentMesh explicitly and safely removed it.
     Removed,
 }
 
@@ -19,6 +27,8 @@ impl WorkspaceState {
     pub fn as_str(&self) -> &'static str {
         match self {
             WorkspaceState::Active => "active",
+            WorkspaceState::Applied => "applied",
+            WorkspaceState::Archived => "archived",
             WorkspaceState::Missing => "missing",
             WorkspaceState::Removed => "removed",
         }
@@ -26,12 +36,22 @@ impl WorkspaceState {
 
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "active" => Some(WorkspaceState::Active),
-            "missing" => Some(WorkspaceState::Missing),
-            "removed" => Some(WorkspaceState::Removed),
-            _ => None,
-        }
+        Some(match value {
+            "active" => WorkspaceState::Active,
+            "applied" => WorkspaceState::Applied,
+            "archived" => WorkspaceState::Archived,
+            "missing" => WorkspaceState::Missing,
+            "removed" => WorkspaceState::Removed,
+            _ => return None,
+        })
+    }
+
+    /// Whether a workspace in this state is still usable as a worktree.
+    pub fn is_live(&self) -> bool {
+        matches!(
+            self,
+            WorkspaceState::Active | WorkspaceState::Applied | WorkspaceState::Archived
+        )
     }
 }
 
@@ -158,6 +178,83 @@ impl WorkspaceRepository {
                 source,
             })?;
         Ok(())
+    }
+
+    /// Update the workspace's branch (used by lifecycle tests and diagnostics).
+    pub async fn set_branch(&self, id: Uuid, branch: &str) -> Result<(), StorageError> {
+        let result = sqlx::query("UPDATE workspaces SET branch = ?, updated_at = ? WHERE id = ?")
+            .bind(branch)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(self.database.pool())
+            .await
+            .map_err(|source| StorageError::UpdateWorkspace {
+                workspace_id: id.to_string(),
+                source,
+            })?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::WorkspaceNotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// All workspaces, newest first, optionally filtered by state.
+    pub async fn list(
+        &self,
+        state: Option<WorkspaceState>,
+        limit: usize,
+    ) -> Result<Vec<WorkspaceRow>, StorageError> {
+        let limit = limit.clamp(1, 200);
+        let mut query = String::from("SELECT * FROM workspaces WHERE 1 = 1");
+        if state.is_some() {
+            query.push_str(" AND state = ?");
+        }
+        query.push_str(" ORDER BY created_at DESC LIMIT ?");
+        let mut q = sqlx::query(&query);
+        if let Some(state) = state {
+            q = q.bind(state.as_str());
+        }
+        let rows = q
+            .bind(limit as i64)
+            .fetch_all(self.database.pool())
+            .await
+            .map_err(StorageError::ListWorkspaces)?;
+        rows.iter().map(row_to_workspace).collect()
+    }
+
+    /// All workspaces joined with their agent session's `agent_id`, newest
+    /// first. Used by the `agentmesh workspaces` listing.
+    pub async fn list_with_agent(
+        &self,
+        state: Option<WorkspaceState>,
+        limit: usize,
+    ) -> Result<Vec<(WorkspaceRow, String)>, StorageError> {
+        let limit = limit.clamp(1, 200);
+        let mut query = String::from(
+            "SELECT w.*, s.agent_id AS agent_id
+             FROM workspaces w
+             LEFT JOIN agent_sessions s ON s.id = w.agent_session_id
+             WHERE 1 = 1",
+        );
+        if state.is_some() {
+            query.push_str(" AND w.state = ?");
+        }
+        query.push_str(" ORDER BY w.created_at DESC LIMIT ?");
+        let mut q = sqlx::query(&query);
+        if let Some(state) = state {
+            q = q.bind(state.as_str());
+        }
+        let rows = q
+            .bind(limit as i64)
+            .fetch_all(self.database.pool())
+            .await
+            .map_err(StorageError::ListWorkspaces)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let agent_id: Option<String> = row.get("agent_id");
+            out.push((row_to_workspace(row)?, agent_id.unwrap_or_default()));
+        }
+        Ok(out)
     }
 }
 

@@ -1,0 +1,25 @@
+[package]
+name = "agentmesh-apply"
+description = "ApplyManager: safely apply reviewed agent changes back to the source repository"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentmesh-core = { path = "../core" }
+agentmesh-orchestrator = { path = "../orchestrator" }
+agentmesh-storage = { path = "../storage" }
+agentmesh-workspace = { path = "../workspace" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+agentmesh-core = { path = "../core" }
+agentmesh-storage = { path = "../storage" }
+agentmesh-workspace = { path = "../workspace" }

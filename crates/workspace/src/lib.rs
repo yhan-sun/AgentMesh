@@ -10,5 +10,8 @@ pub mod manager;
 pub mod model;
 
 pub use error::WorkspaceError;
-pub use manager::WorkspaceManager;
-pub use model::{ChangeStatus, ChangedFile, Workspace, WorkspaceDiff};
+pub use manager::{WorkspaceManager, is_managed_branch};
+pub use model::{
+    ChangeStatus, ChangedFile, CleanupContext, CleanupOutcome, CleanupPlan, Workspace,
+    WorkspaceDiff, workspace_snapshot_hash,
+};

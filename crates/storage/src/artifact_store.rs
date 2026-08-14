@@ -56,4 +56,12 @@ impl ArtifactStore {
             source,
         })
     }
+
+    /// Delete an artifact file from disk (Phase 14 artifact pruning).
+    pub fn delete(&self, path: &Path) -> Result<(), StorageError> {
+        std::fs::remove_file(path).map_err(|source| StorageError::DeleteArtifactFile {
+            path: path.display().to_string(),
+            source,
+        })
+    }
 }

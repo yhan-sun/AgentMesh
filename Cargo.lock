@@ -7,8 +7,19 @@ name = "agentmesh-a2a"
 version = "0.1.0"
 dependencies = [
  "agentmesh-core",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "bytes",
+ "futures",
+ "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -27,12 +38,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentmesh-apply"
+version = "0.1.0"
+dependencies = [
+ "agentmesh-core",
+ "agentmesh-orchestrator",
+ "agentmesh-storage",
+ "agentmesh-workspace",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "agentmesh-cli"
 version = "0.1.0"
 dependencies = [
+ "agentmesh-a2a",
  "agentmesh-adapters",
+ "agentmesh-apply",
  "agentmesh-core",
  "agentmesh-daemon",
+ "agentmesh-orchestrator",
  "agentmesh-storage",
  "agentmesh-tasks",
  "agentmesh-workspace",
@@ -40,6 +72,10 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -53,6 +89,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "toml",
  "tracing",
@@ -63,8 +100,11 @@ dependencies = [
 name = "agentmesh-daemon"
 version = "0.1.0"
 dependencies = [
+ "agentmesh-a2a",
  "agentmesh-adapters",
+ "agentmesh-apply",
  "agentmesh-core",
+ "agentmesh-orchestrator",
  "agentmesh-storage",
  "agentmesh-tasks",
  "agentmesh-workspace",
@@ -85,6 +125,24 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "agentmesh-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "agentmesh-a2a",
+ "agentmesh-core",
+ "async-stream",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -103,6 +161,7 @@ version = "0.1.0"
 dependencies = [
  "agentmesh-core",
  "chrono",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -137,6 +196,7 @@ dependencies = [
  "agentmesh-core",
  "agentmesh-storage",
  "chrono",
+ "serde",
  "sha2",
  "tempfile",
  "thiserror",

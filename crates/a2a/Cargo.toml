@@ -1,13 +1,29 @@
 [package]
 name = "agentmesh-a2a"
-description = "A2A protocol types for AgentMesh"
+description = "A2A v1.0 protocol server for AgentMesh agents"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 agentmesh-core = { path = "../core" }
+async-trait.workspace = true
+async-stream = "0.3"
+axum.workspace = true
+bytes = "1"
+futures.workspace = true
+reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
+agentmesh-core = { path = "../core" }
+async-trait.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

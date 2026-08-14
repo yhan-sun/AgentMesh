@@ -125,6 +125,9 @@ pub enum StorageError {
         source: sqlx::Error,
     },
 
+    #[error("failed to list workspaces: {0}")]
+    ListWorkspaces(sqlx::Error),
+
     #[error("workspace `{0}` not found")]
     WorkspaceNotFound(String),
 
@@ -134,9 +137,142 @@ pub enum StorageError {
         source: std::io::Error,
     },
 
+    #[error("failed to delete artifact file `{path}`: {source}")]
+    DeleteArtifactFile {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("failed to prune artifact files: {0}")]
+    PruneArtifacts(sqlx::Error),
+
     #[error("failed to create artifact directory `{path}`: {source}")]
     CreateArtifactDir {
         path: String,
         source: std::io::Error,
     },
+
+    #[error("failed to create workflow {workflow_id}: {source}")]
+    CreateWorkflow {
+        workflow_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to load workflow {workflow_id}: {source}")]
+    LoadWorkflow {
+        workflow_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to list workflows: {0}")]
+    ListWorkflows(sqlx::Error),
+
+    #[error("failed to update workflow {workflow_id}: {source}")]
+    UpdateWorkflow {
+        workflow_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to recover interrupted workflows: {0}")]
+    RecoverWorkflows(sqlx::Error),
+
+    #[error("workflow `{0}` not found")]
+    WorkflowNotFound(String),
+
+    #[error("failed to upsert step for workflow {workflow_id} at ordinal {ordinal}: {source}")]
+    UpsertStep {
+        workflow_id: String,
+        ordinal: i64,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to load steps for workflow {workflow_id}: {source}")]
+    ListSteps {
+        workflow_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to load step {step_id}: {source}")]
+    LoadStep {
+        step_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to recover interrupted workflow steps: {0}")]
+    RecoverSteps(sqlx::Error),
+
+    #[error("failed to set dependency edges for workflow {workflow_id}: {source}")]
+    SetDependencies {
+        workflow_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to load dependency edges for workflow {workflow_id}: {source}")]
+    ListDependencies {
+        workflow_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to create apply {apply_id}: {source}")]
+    CreateApply {
+        apply_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to load apply {apply_id}: {source}")]
+    LoadApply {
+        apply_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to list applies: {0}")]
+    ListApplies(sqlx::Error),
+
+    #[error("failed to update apply {apply_id}: {source}")]
+    UpdateApply {
+        apply_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("apply `{0}` not found")]
+    ApplyNotFound(String),
+
+    #[error("failed to create workflow plan {plan_id}: {source}")]
+    CreatePlan {
+        plan_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to load workflow plan {plan_id}: {source}")]
+    LoadPlan {
+        plan_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to list workflow plans: {0}")]
+    ListPlans(sqlx::Error),
+
+    #[error("failed to update workflow plan {plan_id}: {source}")]
+    UpdatePlan {
+        plan_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("workflow plan `{0}` not found")]
+    PlanNotFound(String),
+
+    #[error("failed to append provenance event {event_id}: {source}")]
+    AppendProvenanceEvent {
+        event_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to load provenance event {event_id}: {source}")]
+    LoadProvenanceEvent {
+        event_id: String,
+        source: sqlx::Error,
+    },
+
+    #[error("failed to list provenance events: {0}")]
+    ListProvenanceEvents(sqlx::Error),
 }

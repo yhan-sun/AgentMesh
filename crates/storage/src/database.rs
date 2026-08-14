@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{SqlitePool, migrate};
 
 use crate::error::StorageError;
@@ -83,7 +83,15 @@ impl Database {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true)
-            .busy_timeout(std::time::Duration::from_secs(5));
+            // WAL + synchronous=NORMAL: a crash can lose the last committed
+            // transactions, never corrupt the database — the daemon treats
+            // recent state as recoverable anyway. NORMAL avoids a fsync per
+            // commit, which keeps write transactions short under load.
+            .synchronous(SqliteSynchronous::Normal)
+            // 30s: under heavy concurrent load a writer may have to wait for
+            // the single WAL writer; the scheduler persists node state
+            // asynchronously and must not drop it on a lock timeout.
+            .busy_timeout(std::time::Duration::from_secs(30));
 
         let pool = SqlitePoolOptions::new()
             .max_connections(4)

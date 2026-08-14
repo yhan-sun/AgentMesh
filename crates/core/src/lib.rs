@@ -6,7 +6,12 @@
 pub mod config;
 pub mod error;
 pub mod model;
+pub mod provenance;
 
-pub use config::{AgentConfig, AgentMeshConfig, ConfigError};
+pub use config::{
+    AgentConfig, AgentMeshConfig, CompetitionConfig, ConfigError, EvaluationConfig,
+    PlanPolicyConfig, PlannerConfig, RecoveryConfig, RoutingConfig,
+};
 pub use error::CoreError;
 pub use model::*;
+pub use provenance::*;

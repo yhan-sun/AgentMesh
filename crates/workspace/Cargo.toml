@@ -9,6 +9,7 @@ license.workspace = true
 agentmesh-core = { path = "../core" }
 agentmesh-storage = { path = "../storage" }
 chrono.workspace = true
+serde.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true

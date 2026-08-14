@@ -6,12 +6,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+agentmesh-a2a = { path = "../a2a" }
 agentmesh-adapters = { path = "../adapters" }
+agentmesh-apply = { path = "../apply" }
 agentmesh-core = { path = "../core" }
+agentmesh-orchestrator = { path = "../orchestrator" }
 agentmesh-storage = { path = "../storage" }
 agentmesh-tasks = { path = "../tasks" }
 agentmesh-workspace = { path = "../workspace" }
 anyhow.workspace = true
+async-trait.workspace = true
 async-stream = "0.3.6"
 axum.workspace = true
 chrono.workspace = true
@@ -37,3 +41,4 @@ async-trait.workspace = true
 futures.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 tempfile.workspace = true
+tracing-subscriber.workspace = true

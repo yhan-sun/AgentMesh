@@ -58,6 +58,12 @@ pub fn daemon_token_path(scope: &Scope) -> PathBuf {
     scope.runtime_dir().join("daemon.token")
 }
 
+/// A2A RPC token: separate from the daemon token (which can shut down the
+/// daemon).
+pub fn a2a_token_path(scope: &Scope) -> PathBuf {
+    scope.runtime_dir().join("a2a.token")
+}
+
 pub fn daemon_log_path(scope: &Scope) -> PathBuf {
     match scope {
         Scope::Project(root) => root.join(".agentmesh").join("logs").join("daemon.log"),

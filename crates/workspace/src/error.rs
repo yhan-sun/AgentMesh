@@ -29,6 +29,20 @@ pub enum WorkspaceError {
     #[error("workspace `{0}` has uncommitted changes and cannot be removed without --force")]
     WorkspaceDirty(String),
 
+    #[error("workspace `{0}` was removed by AgentMesh cleanup; it cannot be resumed or reused")]
+    WorkspaceRemoved(String),
+
+    #[error("workspace `{0}` is not safe to remove: {1}")]
+    WorkspaceNotSafeToRemove(String, String),
+
+    #[error(
+        "workspace `{0}` changed after it was applied; refusing to remove it (the applied result would be lost)"
+    )]
+    WorkspaceChangedAfterApply(String),
+
+    #[error("refusing to delete a branch AgentMesh does not manage: `{0}`")]
+    NotManagedBranch(String),
+
     #[error("workspace `{0}` not found")]
     WorkspaceNotFound(String),
 

@@ -13,6 +13,7 @@ use crate::error::StorageError;
 pub struct TaskFilter {
     pub agent_id: Option<String>,
     pub status: Option<TaskStatus>,
+    pub context_id: Option<Uuid>,
     pub limit: usize,
 }
 
@@ -29,6 +30,11 @@ impl TaskFilter {
 
     pub fn status(mut self, status: TaskStatus) -> Self {
         self.status = Some(status);
+        self
+    }
+
+    pub fn context(mut self, context_id: Uuid) -> Self {
+        self.context_id = Some(context_id);
         self
     }
 }
@@ -178,6 +184,9 @@ impl TaskRepository {
         if filter.status.is_some() {
             query.push_str(" AND status = ?");
         }
+        if filter.context_id.is_some() {
+            query.push_str(" AND context_id = ?");
+        }
         query.push_str(" ORDER BY created_at DESC LIMIT ?");
 
         let mut q = sqlx::query(&query);
@@ -186,6 +195,9 @@ impl TaskRepository {
         }
         if let Some(status) = &filter.status {
             q = q.bind(status.as_str());
+        }
+        if let Some(context_id) = &filter.context_id {
+            q = q.bind(context_id.to_string());
         }
         let rows = q
             .bind(limit as i64)

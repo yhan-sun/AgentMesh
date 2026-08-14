@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 /// Test adapter that replays a fixed event script with cancellable pacing.
 struct FixtureAdapter {
+    /// Adapter id; the test harness uses distinct ids for distinct agents.
+    id: String,
     script: Vec<AgentEvent>,
     cancel: Arc<AtomicBool>,
     fail_start: bool,
@@ -38,18 +40,18 @@ struct FixtureAdapter {
 #[async_trait]
 impl CodingAgentAdapter for FixtureAdapter {
     fn id(&self) -> &str {
-        "fixture"
+        &self.id
     }
     fn name(&self) -> &str {
         "Fixture"
     }
     fn descriptor(&self) -> AgentDescriptor {
         AgentDescriptor {
-            id: "fixture".into(),
+            id: self.id.clone(),
             name: "Fixture".into(),
             description: None,
             skills: vec![],
-            endpoint: "agent://fixture".into(),
+            endpoint: format!("agent://{}", self.id),
             workspace_requirement: self.workspace_requirement,
         }
     }
@@ -199,6 +201,7 @@ async fn test_context_with_workspace_root(
 
 fn isolated_fixture(script: Vec<AgentEvent>) -> FixtureAdapter {
     FixtureAdapter {
+        id: "fixture".into(),
         script,
         cancel: Arc::new(AtomicBool::new(false)),
         fail_start: false,
@@ -233,6 +236,7 @@ async fn drain(run: &mut agentmesh_tasks::ManagedTaskRun) -> Vec<AgentEvent> {
 #[tokio::test]
 async fn successful_task_reaches_completed() {
     let ctx = test_context(registry_with(FixtureAdapter {
+        id: "fixture".into(),
         script: vec![
             AgentEvent::Started,
             AgentEvent::Message("hello".into()),
@@ -267,6 +271,7 @@ async fn successful_task_reaches_completed() {
 #[tokio::test]
 async fn adapter_failure_persists_failed_task() {
     let ctx = test_context(registry_with(FixtureAdapter {
+        id: "fixture".into(),
         script: vec![],
         cancel: Arc::new(AtomicBool::new(false)),
         fail_start: true,
@@ -301,6 +306,7 @@ async fn adapter_failure_persists_failed_task() {
 async fn artifact_events_are_persisted() {
     let artifact = Artifact::text("summary.md", "content");
     let ctx = test_context(registry_with(FixtureAdapter {
+        id: "fixture".into(),
         script: vec![
             AgentEvent::Started,
             AgentEvent::ArtifactUpdated(artifact),
@@ -331,6 +337,7 @@ async fn artifact_events_are_persisted() {
 #[tokio::test]
 async fn stream_events_still_reach_caller() {
     let ctx = test_context(registry_with(FixtureAdapter {
+        id: "fixture".into(),
         script: vec![
             AgentEvent::Started,
             AgentEvent::Message("m1".into()),
@@ -361,6 +368,7 @@ async fn stream_events_still_reach_caller() {
 #[tokio::test]
 async fn agent_not_found_persists_failed_task() {
     let ctx = test_context(registry_with(FixtureAdapter {
+        id: "fixture".into(),
         script: vec![],
         cancel: Arc::new(AtomicBool::new(false)),
         fail_start: false,
@@ -396,6 +404,7 @@ async fn agent_not_found_persists_failed_task() {
 #[tokio::test]
 async fn cancel_via_run_kills_and_persists_cancelled() {
     let ctx = test_context(registry_with(FixtureAdapter {
+        id: "fixture".into(),
         script: vec![
             AgentEvent::Started,
             AgentEvent::Message("working".into()),
@@ -433,6 +442,7 @@ async fn cancel_via_run_kills_and_persists_cancelled() {
 
 fn fixture(script: Vec<AgentEvent>) -> FixtureAdapter {
     FixtureAdapter {
+        id: "fixture".into(),
         script,
         cancel: Arc::new(AtomicBool::new(false)),
         fail_start: false,
@@ -484,6 +494,7 @@ async fn fresh_run_creates_context_session_and_task() {
 #[tokio::test]
 async fn native_session_id_is_persisted_before_completion() {
     let ctx = test_context(registry_with(FixtureAdapter {
+        id: "fixture".into(),
         script: vec![AgentEvent::Started, AgentEvent::Completed],
         cancel: Arc::new(AtomicBool::new(false)),
         fail_start: false,
@@ -558,6 +569,7 @@ async fn resume_from_database_reload_uses_persisted_session() {
         ));
         let manager = TaskManager::new(
             registry_with(FixtureAdapter {
+                id: "fixture".into(),
                 script: vec![AgentEvent::Started, AgentEvent::Completed],
                 cancel: Arc::new(AtomicBool::new(false)),
                 fail_start: false,
@@ -640,6 +652,7 @@ async fn resume_restores_session_workspace() {
         ));
         let manager = TaskManager::new(
             registry_with(FixtureAdapter {
+                id: "fixture".into(),
                 script: vec![AgentEvent::Started, AgentEvent::Completed],
                 cancel: Arc::new(AtomicBool::new(false)),
                 fail_start: false,
@@ -717,6 +730,7 @@ async fn resume_missing_workspace_fails() {
         ));
         let manager = TaskManager::new(
             registry_with(FixtureAdapter {
+                id: "fixture".into(),
                 script: vec![AgentEvent::Started, AgentEvent::Completed],
                 cancel: Arc::new(AtomicBool::new(false)),
                 fail_start: false,
@@ -818,6 +832,7 @@ async fn resume_unsupported_adapter_fails_new_task() {
         ));
         let manager = TaskManager::new(
             registry_with(FixtureAdapter {
+                id: "fixture".into(),
                 script: vec![AgentEvent::Started, AgentEvent::Completed],
                 cancel: Arc::new(AtomicBool::new(false)),
                 fail_start: false,
@@ -845,6 +860,7 @@ async fn resume_unsupported_adapter_fails_new_task() {
     let tasks = TaskRepository::new(db2.clone());
     let manager2 = TaskManager::new(
         registry_with(FixtureAdapter {
+            id: "fixture".into(),
             script: vec![],
             cancel: Arc::new(AtomicBool::new(false)),
             fail_start: false,
@@ -914,6 +930,7 @@ fn clean_repo() -> tempfile::TempDir {
 /// can verify which directory the adapter actually received.
 fn writing_fixture(filename: &'static str, content: &'static str) -> FixtureAdapter {
     FixtureAdapter {
+        id: "fixture".into(),
         script: vec![AgentEvent::Started, AgentEvent::Completed],
         cancel: Arc::new(AtomicBool::new(false)),
         fail_start: false,
@@ -1077,6 +1094,7 @@ async fn resume_reuses_same_worktree_across_manager_instances() {
     ));
     let manager2 = TaskManager::new(
         registry_with(FixtureAdapter {
+            id: "fixture".into(),
             script: vec![AgentEvent::Started, AgentEvent::Completed],
             cancel: Arc::new(AtomicBool::new(false)),
             fail_start: false,
@@ -1168,4 +1186,162 @@ async fn mock_without_git_repo_still_works() {
     let mut run = ctx.manager.start("fixture", request).await.expect("start");
     let events = drain(&mut run).await;
     assert!(events.contains(&AgentEvent::Completed));
+}
+
+// ---------- Phase 11: context workspace provisioning ----------
+
+/// A `writing_fixture` variant with a configurable adapter id.
+fn writing_fixture_named(
+    id: &str,
+    filename: &'static str,
+    content: &'static str,
+) -> FixtureAdapter {
+    FixtureAdapter {
+        id: id.to_string(),
+        script: vec![AgentEvent::Started, AgentEvent::Completed],
+        cancel: Arc::new(AtomicBool::new(false)),
+        fail_start: false,
+        native_session_id: Some(format!("ws-native-{id}")),
+        resume_ok: true,
+        workspace_requirement: WorkspaceRequirement::IsolatedGit,
+        write_file: Some((filename, content)),
+    }
+}
+
+#[tokio::test]
+async fn new_agent_in_context_gets_its_own_worktree_from_the_same_repo() {
+    let repo = clean_repo();
+    let root = repo.path().canonicalize().expect("canonicalize repo");
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let mut registry = AgentRegistry::default();
+    registry.register(Box::new(writing_fixture_named(
+        "alpha",
+        "alpha.txt",
+        "alpha content\n",
+    )));
+    registry.register(Box::new(writing_fixture_named(
+        "beta",
+        "beta.txt",
+        "beta content\n",
+    )));
+    let ctx = test_context_with_workspace_root(
+        Arc::new(registry),
+        Some(data_dir.path().join("worktrees")),
+    )
+    .await;
+
+    // Alpha starts the context (fresh worktree from the repo).
+    let mut req_a = request("architect");
+    req_a.workspace = Some(repo.path().to_path_buf());
+    let mut run_a = ctx
+        .manager
+        .start("alpha", req_a)
+        .await
+        .expect("alpha start");
+    let context_id = run_a.context_id();
+    drain(&mut run_a).await;
+
+    // Beta joins the SAME context, deriving the source repository from
+    // alpha's workspace (its request carries no workspace at all). The
+    // daemon's A2A backend resolves-or-creates the session first.
+    ctx.manager
+        .resolve_or_create_context_session(context_id, "beta")
+        .await
+        .expect("resolve beta session");
+    let mut run_b = ctx
+        .manager
+        .start_in_context(context_id, "beta", request("implement"))
+        .await
+        .expect("beta joins context");
+    let beta_session_id = run_b.agent_session_id().expect("beta session");
+    drain(&mut run_b).await;
+
+    let alpha_session_id = run_a.agent_session_id().expect("alpha session");
+    assert_ne!(alpha_session_id, beta_session_id, "one session per agent");
+
+    // Each agent has its own isolated worktree of the same repository.
+    let ws_a = ctx
+        .workspaces
+        .workspace_for_session(alpha_session_id)
+        .await
+        .expect("alpha workspace");
+    let ws_b = ctx
+        .workspaces
+        .workspace_for_session(beta_session_id)
+        .await
+        .expect("beta workspace");
+    assert_ne!(ws_a.id, ws_b.id, "distinct workspace rows");
+    assert_ne!(ws_a.path, ws_b.path, "agents never share a worktree");
+    assert_eq!(
+        ws_a.repository_root, root,
+        "alpha rooted at the source repo"
+    );
+    assert_eq!(
+        ws_b.repository_root, root,
+        "beta rooted at the same source repo"
+    );
+    assert_ne!(
+        ws_b.path, root,
+        "beta must not run directly in the source repo"
+    );
+
+    // The beta adapter ran inside its own worktree, not the source repo.
+    assert!(
+        ws_b.path.join("beta.txt").exists(),
+        "beta's worktree received the adapter's file"
+    );
+    assert!(
+        !repo.path().join("beta.txt").exists(),
+        "the source repository must stay clean"
+    );
+}
+
+#[tokio::test]
+async fn same_agent_in_context_reuses_session_and_worktree() {
+    let repo = clean_repo();
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let mut registry = AgentRegistry::default();
+    registry.register(Box::new(writing_fixture_named(
+        "alpha",
+        "alpha.txt",
+        "alpha content\n",
+    )));
+    let ctx = test_context_with_workspace_root(
+        Arc::new(registry),
+        Some(data_dir.path().join("worktrees")),
+    )
+    .await;
+
+    let mut req_a = request("first");
+    req_a.workspace = Some(repo.path().to_path_buf());
+    let mut run_a = ctx.manager.start("alpha", req_a).await.expect("start");
+    let context_id = run_a.context_id();
+    let first_session = run_a.agent_session_id().expect("session");
+    drain(&mut run_a).await;
+    let ws_first = ctx
+        .workspaces
+        .workspace_for_session(first_session)
+        .await
+        .expect("first workspace");
+
+    // The same agent continues in the same context: same session + worktree.
+    let mut run_b = ctx
+        .manager
+        .start_in_context(context_id, "alpha", request("second"))
+        .await
+        .expect("alpha continues");
+    let second_session = run_b.agent_session_id().expect("session");
+    drain(&mut run_b).await;
+
+    assert_eq!(
+        first_session, second_session,
+        "same agent reuses its session"
+    );
+    let ws_second = ctx
+        .workspaces
+        .workspace_for_session(second_session)
+        .await
+        .expect("second workspace");
+    assert_eq!(ws_first.id, ws_second.id, "same worktree reused");
+    assert_eq!(ws_first.path, ws_second.path);
 }

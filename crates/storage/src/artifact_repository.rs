@@ -1,7 +1,9 @@
 //! Artifact persistence: SQL rows in, domain objects out.
 
+use std::path::PathBuf;
+
 use agentmesh_core::{Artifact, ArtifactKind};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -129,6 +131,78 @@ impl ArtifactRepository {
             })
             .collect()
     }
+
+    /// Prune file-backed artifacts of terminal tasks older than `older_than`
+    /// (Phase 14 `agentmesh artifacts prune`).
+    ///
+    /// Only *file-backed* artifacts (content stored on disk, `path` set) are
+    /// ever removed. The SQLite metadata row is kept — its `path` is cleared —
+    /// so task / workflow / apply history stays queryable. Artifacts whose
+    /// task is part of a running or interrupted workflow, or whose session
+    /// still has an active/applied/archived workspace, are never touched.
+    ///
+    /// With `check = true` nothing is deleted; only the candidate count is
+    /// returned.
+    pub async fn prune_files(
+        &self,
+        older_than: &DateTime<Utc>,
+        check: bool,
+    ) -> Result<PruneResult, StorageError> {
+        let older = older_than.to_rfc3339();
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT a.id, a.path FROM artifacts a
+             JOIN tasks t ON t.id = a.task_id
+             WHERE a.path IS NOT NULL
+               AND a.created_at < ?
+               AND t.status IN ('completed', 'failed', 'cancelled')
+               AND NOT EXISTS (
+                   SELECT 1 FROM workflow_steps s
+                   JOIN workflows w ON w.id = s.workflow_id
+                   WHERE s.task_id = a.task_id AND w.status IN ('running', 'interrupted')
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM workspaces ws
+                   WHERE ws.agent_session_id = t.agent_session_id
+                     AND ws.state IN ('active', 'applied', 'archived')
+               )",
+        )
+        .bind(&older)
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(StorageError::PruneArtifacts)?;
+
+        let mut pruned = 0usize;
+        if !check {
+            for (id, path) in &rows {
+                let path_buf = PathBuf::from(path);
+                match self.store.delete(&path_buf) {
+                    Ok(()) => {}
+                    // The file may already be gone; still clear the row path.
+                    Err(StorageError::DeleteArtifactFile { .. }) if !path_buf.exists() => {}
+                    Err(err) => return Err(err),
+                }
+                sqlx::query("UPDATE artifacts SET path = NULL WHERE id = ?")
+                    .bind(id)
+                    .execute(self.database.pool())
+                    .await
+                    .map_err(StorageError::PruneArtifacts)?;
+                pruned += 1;
+            }
+        }
+        Ok(PruneResult {
+            candidates: rows.len(),
+            pruned,
+        })
+    }
+}
+
+/// Result of an artifact prune run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PruneResult {
+    /// Number of file-backed artifacts that qualified for pruning.
+    pub candidates: usize,
+    /// Number actually pruned (0 for a `--check` preview).
+    pub pruned: usize,
 }
 
 fn artifact_kind_str(kind: ArtifactKind) -> &'static str {
