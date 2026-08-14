@@ -85,12 +85,26 @@ impl DaemonClient {
         prompt: &str,
         workspace: Option<&PathBuf>,
     ) -> Result<RunResponse, DaemonError> {
+        self.run_with_options(agent_id, prompt, workspace, None, None)
+            .await
+    }
+
+    pub async fn run_with_options(
+        &self,
+        agent_id: &str,
+        prompt: &str,
+        workspace: Option<&PathBuf>,
+        from_task_id: Option<Uuid>,
+        from_context_id: Option<Uuid>,
+    ) -> Result<RunResponse, DaemonError> {
         self.post(
             "/v1/tasks/run",
             &RunRequest {
                 agent_id: agent_id.to_string(),
                 prompt: prompt.to_string(),
                 source_workspace: workspace.map(|p| p.display().to_string()),
+                from_task_id,
+                from_context_id,
             },
         )
         .await

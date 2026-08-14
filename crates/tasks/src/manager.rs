@@ -166,18 +166,67 @@ impl TaskManager {
         request: AgentRunRequest,
         metadata: ExecutionMetadata,
     ) -> Result<ManagedTaskRun, TaskError> {
-        let context = Context::new();
-        let mut session = AgentSession::new(context.id, agent_id);
-        session.workspace = request.workspace.clone();
+        let existing_context = if request.context_id != Uuid::nil() {
+            self.contexts.get(request.context_id).await?
+        } else {
+            None
+        };
 
-        let mut task =
-            AgentTask::with_workspace(agent_id, request.input.clone(), request.workspace.clone());
-        task.context_id = context.id;
-        task.agent_session_id = Some(session.id);
+        let (context, session, task) = if let Some(context) = existing_context {
+            let session = match self
+                .sessions
+                .get_by_context_agent(context.id, agent_id)
+                .await?
+            {
+                Some(mut s) => {
+                    if s.workspace.is_none() && request.workspace.is_some() {
+                        s.workspace = request.workspace.clone();
+                        self.sessions
+                            .set_workspace(s.id, request.workspace.as_deref())
+                            .await?;
+                    }
+                    s
+                }
+                None => {
+                    let mut s = AgentSession::new(context.id, agent_id);
+                    s.workspace = request.workspace.clone();
+                    self.sessions.create(&s).await?;
+                    s
+                }
+            };
 
-        self.contexts
-            .create_run_setup(&context, &session, &task)
-            .await?;
+            let mut task = AgentTask::with_workspace(
+                agent_id,
+                request.input.clone(),
+                request.workspace.clone(),
+            );
+            task.context_id = context.id;
+            task.agent_session_id = Some(session.id);
+            self.contexts
+                .create_task_for_context(&context, &session, &task)
+                .await?;
+            (context, session, task)
+        } else {
+            let mut context = Context::new();
+            if request.context_id != Uuid::nil() {
+                context.id = request.context_id;
+            }
+            let mut session = AgentSession::new(context.id, agent_id);
+            session.workspace = request.workspace.clone();
+
+            let mut task = AgentTask::with_workspace(
+                agent_id,
+                request.input.clone(),
+                request.workspace.clone(),
+            );
+            task.context_id = context.id;
+            task.agent_session_id = Some(session.id);
+
+            self.contexts
+                .create_run_setup(&context, &session, &task)
+                .await?;
+            (context, session, task)
+        };
         if let Some(owner) = &metadata.runtime_owner {
             self.tasks.set_runtime_owner(task.id, owner).await?;
         }

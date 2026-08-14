@@ -96,6 +96,19 @@ agentmesh apply <TASK_ID> --check
 agentmesh apply <TASK_ID> --yes
 ```
 
+#### 进阶：跨 Agent 上下文共享 (Cross-Agent Context Handoff)
+
+支持将一个 Agent（如 Codex / GPT）的对话历史与产物，无缝交接给另一个 Agent（如 Claude Code）：
+
+```bash
+# 1. 先由 Codex 进行架构分析与接口设计
+agentmesh run codex "设计高并发 WebSocket 网关协议与接口规范"
+# -> 生成任务 ID: a1b2c3d4-...
+
+# 2. 启动 Claude Code，自动读取并注入 Codex 的前序对话、决策与产物
+agentmesh run claude "基于上述接口规范实现客户端连接池与自动重连" --from-task a1b2c3d4-...
+```
+
 ### 演示 2：并行 DAG 工作流与多评审共识修复循环
 
 在持久化有向无环图中协同多个专业化 Agent：
@@ -154,7 +167,7 @@ agentmesh workflow export <WORKFLOW_ID> --output audit.json
 | `agentmesh doctor [--json]` | 全面诊断系统运行环境、数据库、Git 和 Agent 状态 |
 | `agentmesh config validate [--json]` | 校验配置文件的语法与语义策略边界约束 |
 | `agentmesh agents [--json]` | 列出所有注册的 Agent 及其在线状态与技能 |
-| `agentmesh run <agent> <prompt>` | 针对指定 Agent 派发单次运行任务 |
+| `agentmesh run <agent> <prompt> [--from-task <id>] [--from-context <id>]` | 派发任务，支持跨 Agent 继承前序对话历史与产物 |
 | `agentmesh tasks [--status <s>] [--limit <n>]` | 分页列出历史任务记录 |
 | `agentmesh task <task_id> [--json]` | 查看任务详细信息、会话及产物 |
 | `agentmesh diff <task_id>` | 查看任务在独立 Worktree 中生成的完整 Git Diff |

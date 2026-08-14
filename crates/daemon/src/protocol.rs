@@ -33,6 +33,12 @@ pub struct RunRequest {
     /// Source project/repository location; `null` uses the daemon cwd scope.
     #[serde(default)]
     pub source_workspace: Option<String>,
+    /// Optional prior task ID to inherit cross-agent conversation & artifacts from.
+    #[serde(default)]
+    pub from_task_id: Option<Uuid>,
+    /// Optional prior context ID to inherit all tasks from that context.
+    #[serde(default)]
+    pub from_context_id: Option<Uuid>,
 }
 
 /// Request to resume a previous task.

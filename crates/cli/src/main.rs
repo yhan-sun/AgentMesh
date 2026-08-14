@@ -55,11 +55,19 @@ enum Command {
 
     /// Run a task on an agent with a plain-text prompt
     Run {
-        /// Agent id, e.g. `mock`, `claude`, `codex`
+        /// Agent id, e.g. `mock`, `claude`, `codex`, `opencode`, `antigravity`
         agent: String,
 
         /// Prompt to send to the agent
         prompt: String,
+
+        /// Inherit cross-agent transcript and artifacts from a prior task ID
+        #[arg(long)]
+        from_task: Option<Uuid>,
+
+        /// Inherit all cross-agent transcripts and artifacts from a prior context ID
+        #[arg(long)]
+        from_context: Option<Uuid>,
     },
 
     /// Diagnose the environment: binaries, versions, health
@@ -746,11 +754,18 @@ async fn run_cli(cli: Cli) -> Result<(), CliError> {
         Command::Config { command } => match command {
             ConfigCommand::Validate { json } => cmd_config_validate(json).await,
         },
-        Command::Run { agent, prompt } => {
+        Command::Run {
+            agent,
+            prompt,
+            from_task,
+            from_context,
+        } => {
             let context = AppContext::init()
                 .await
                 .map_err(|e| CliError::daemon_error(e.to_string()))?;
-            cmd_run(&context, &agent, &prompt).await.map_err(Into::into)
+            cmd_run(&context, &agent, &prompt, from_task, from_context)
+                .await
+                .map_err(Into::into)
         }
         Command::Tasks {
             limit,
@@ -1494,14 +1509,26 @@ async fn cmd_doctor(context: &AppContext, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_run(_context: &AppContext, agent_id: &str, prompt: &str) -> anyhow::Result<()> {
+async fn cmd_run(
+    _context: &AppContext,
+    agent_id: &str,
+    prompt: &str,
+    from_task: Option<Uuid>,
+    from_context: Option<Uuid>,
+) -> anyhow::Result<()> {
     let scope = agentmesh_daemon::Scope::resolve();
     let client = agentmesh_daemon::connect_or_start(scope)
         .await
         .map_err(|err| anyhow!("unable to start AgentMesh daemon: {err}"))?;
     let workspace = std::env::current_dir().ok();
     let response = client
-        .run(agent_id, prompt, workspace.as_ref())
+        .run_with_options(
+            agent_id,
+            prompt,
+            workspace.as_ref(),
+            from_task,
+            from_context,
+        )
         .await
         .map_err(|err| anyhow!("failed to run task through daemon: {err}"))?;
     stream_task_to_terminal(&client, &response, false).await

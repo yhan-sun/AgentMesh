@@ -192,10 +192,20 @@ async fn run_task(
     if let Err(err) = auth_or_err(&headers, &state).await {
         return (StatusCode::UNAUTHORIZED, Json(err)).into_response();
     }
+
+    let (inherited_context_id, prior_summaries) =
+        match collect_prior_tasks(&state, request.from_task_id, request.from_context_id).await {
+            Ok(res) => res,
+            Err(err) => return (StatusCode::NOT_FOUND, Json(err)).into_response(),
+        };
+
+    let final_prompt = agentmesh_core::format_cross_agent_prompt(&request.prompt, &prior_summaries);
+    let context_id = inherited_context_id.unwrap_or_else(Uuid::new_v4);
+
     let mut run_request = AgentRunRequest::new(
         Uuid::new_v4(),
-        Uuid::new_v4(),
-        AgentMessage::user(&request.prompt),
+        context_id,
+        AgentMessage::user(&final_prompt),
     );
     if let Some(source) = &request.source_workspace {
         run_request.workspace = Some(PathBuf::from(source));
@@ -218,6 +228,107 @@ async fn run_task(
             Json(response).into_response()
         }
         Err(err) => api_error_from_task(err),
+    }
+}
+
+async fn collect_prior_tasks(
+    state: &SharedState,
+    from_task_id: Option<Uuid>,
+    from_context_id: Option<Uuid>,
+) -> Result<(Option<Uuid>, Vec<agentmesh_core::PriorTaskSummary>), ApiError> {
+    if let Some(task_id) = from_task_id {
+        let task = state
+            .task_repo
+            .get(task_id)
+            .await
+            .map_err(|e| ApiError::new("storage_error", e.to_string()))?
+            .ok_or_else(|| {
+                ApiError::new("not_found", format!("prior task `{task_id}` not found"))
+            })?;
+
+        let artifacts = state
+            .artifacts
+            .list_by_task(task.id)
+            .await
+            .map_err(|e| ApiError::new("storage_error", e.to_string()))?;
+
+        let art_summaries = artifacts
+            .into_iter()
+            .map(|a| {
+                let size_bytes = a.content.len();
+                let preview = String::from_utf8(a.content).ok();
+                agentmesh_core::PriorArtifactSummary {
+                    name: a.name,
+                    kind: a.kind,
+                    content_preview: preview,
+                    size_bytes,
+                }
+            })
+            .collect();
+
+        let summary = agentmesh_core::PriorTaskSummary {
+            task_id: task.id,
+            agent_id: task.agent_id,
+            status: task.status,
+            prompt: task.input.content,
+            error: task.error,
+            artifacts: art_summaries,
+            created_at: task.created_at.to_rfc3339(),
+            completed_at: task.completed_at.map(|t| t.to_rfc3339()),
+        };
+
+        Ok((Some(task.context_id), vec![summary]))
+    } else if let Some(context_id) = from_context_id {
+        let filter = agentmesh_storage::TaskFilter::default().context(context_id);
+        let tasks = state
+            .task_repo
+            .list(&filter)
+            .await
+            .map_err(|e| ApiError::new("storage_error", e.to_string()))?;
+
+        if tasks.is_empty() {
+            return Err(ApiError::new(
+                "not_found",
+                format!("no tasks found for prior context `{context_id}`"),
+            ));
+        }
+
+        let mut summaries = Vec::new();
+        for task in tasks {
+            let artifacts = state
+                .artifacts
+                .list_by_task(task.id)
+                .await
+                .map_err(|e| ApiError::new("storage_error", e.to_string()))?;
+
+            let art_summaries = artifacts
+                .into_iter()
+                .map(|a| {
+                    let size_bytes = a.content.len();
+                    let preview = String::from_utf8(a.content).ok();
+                    agentmesh_core::PriorArtifactSummary {
+                        name: a.name,
+                        kind: a.kind,
+                        content_preview: preview,
+                        size_bytes,
+                    }
+                })
+                .collect();
+
+            summaries.push(agentmesh_core::PriorTaskSummary {
+                task_id: task.id,
+                agent_id: task.agent_id,
+                status: task.status,
+                prompt: task.input.content,
+                error: task.error,
+                artifacts: art_summaries,
+                created_at: task.created_at.to_rfc3339(),
+                completed_at: task.completed_at.map(|t| t.to_rfc3339()),
+            });
+        }
+        Ok((Some(context_id), summaries))
+    } else {
+        Ok((None, Vec::new()))
     }
 }
 
