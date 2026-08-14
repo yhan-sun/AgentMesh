@@ -12,6 +12,7 @@ members = [
     "crates/daemon",
     "crates/orchestrator",
     "crates/cli",
+    "desktop/src-tauri",
 ]
 
 [workspace.package]
